@@ -1,0 +1,139 @@
+{
+  "meta": {
+    "name": "Sample Campus - Ground Floor",
+    "version": 1,
+    "note": "Replace with your real campus data. All step counts are approximate."
+  },
+  "nodes": [
+    {
+      "id": "entrance",
+      "name": "Main Entrance",
+      "floor": 0,
+      "expected_signs": ["main entrance", "entrance", "welcome"],
+      "hazards": ["glass door ahead"],
+      "description": "Main building entrance with glass double doors."
+    },
+    {
+      "id": "lobby",
+      "name": "Lobby",
+      "floor": 0,
+      "expected_signs": ["reception", "lobby", "information"],
+      "hazards": [],
+      "description": "Open lobby area with reception desk on the right."
+    },
+    {
+      "id": "corridor_a",
+      "name": "Corridor A",
+      "floor": 0,
+      "expected_signs": ["corridor a", "block a"],
+      "hazards": [],
+      "description": "Long corridor connecting lobby to classrooms."
+    },
+    {
+      "id": "room_101",
+      "name": "Room 101",
+      "floor": 0,
+      "expected_signs": ["101", "room 101"],
+      "hazards": [],
+      "description": "Classroom on the left side of Corridor A."
+    },
+    {
+      "id": "room_102",
+      "name": "Room 102",
+      "floor": 0,
+      "expected_signs": ["102", "room 102"],
+      "hazards": [],
+      "description": "Classroom on the right side of Corridor A."
+    },
+    {
+      "id": "room_103",
+      "name": "Room 103",
+      "floor": 0,
+      "expected_signs": ["103", "room 103"],
+      "hazards": [],
+      "description": "Lab at the end of Corridor A."
+    },
+    {
+      "id": "corridor_b",
+      "name": "Corridor B",
+      "floor": 0,
+      "expected_signs": ["corridor b", "block b"],
+      "hazards": [],
+      "description": "Corridor branching right from the lobby."
+    },
+    {
+      "id": "hod_office",
+      "name": "HOD Office",
+      "floor": 0,
+      "expected_signs": ["hod", "head of department", "hod office"],
+      "hazards": [],
+      "description": "Head of Department office at the end of Corridor B."
+    },
+    {
+      "id": "staff_room",
+      "name": "Staff Room",
+      "floor": 0,
+      "expected_signs": ["staff room", "staff", "faculty"],
+      "hazards": [],
+      "description": "Staff room along Corridor B."
+    },
+    {
+      "id": "washroom",
+      "name": "Washroom",
+      "floor": 0,
+      "expected_signs": ["washroom", "restroom", "toilet", "wc"],
+      "hazards": ["wet floor possible"],
+      "description": "Washroom near the lobby."
+    },
+    {
+      "id": "stairs_up",
+      "name": "Staircase",
+      "floor": 0,
+      "expected_signs": ["stairs", "staircase"],
+      "hazards": ["stairs going up, about 12 steps"],
+      "description": "Staircase leading to the first floor."
+    },
+    {
+      "id": "canteen",
+      "name": "Canteen",
+      "floor": 0,
+      "expected_signs": ["canteen", "cafeteria", "food"],
+      "hazards": [],
+      "description": "Canteen area near the entrance."
+    }
+  ],
+  "edges": [
+    {"from": "entrance",    "to": "lobby",       "steps": 8,   "heading": 0},
+    {"from": "lobby",       "to": "entrance",    "steps": 8,   "heading": 180},
+
+    {"from": "lobby",       "to": "corridor_a",  "steps": 12,  "heading": 0},
+    {"from": "corridor_a",  "to": "lobby",       "steps": 12,  "heading": 180},
+
+    {"from": "corridor_a",  "to": "room_101",    "steps": 10,  "heading": 270},
+    {"from": "room_101",    "to": "corridor_a",  "steps": 10,  "heading": 90},
+
+    {"from": "corridor_a",  "to": "room_102",    "steps": 10,  "heading": 90},
+    {"from": "room_102",    "to": "corridor_a",  "steps": 10,  "heading": 270},
+
+    {"from": "corridor_a",  "to": "room_103",    "steps": 18,  "heading": 0},
+    {"from": "room_103",    "to": "corridor_a",  "steps": 18,  "heading": 180},
+
+    {"from": "lobby",       "to": "corridor_b",  "steps": 10,  "heading": 90},
+    {"from": "corridor_b",  "to": "lobby",       "steps": 10,  "heading": 270},
+
+    {"from": "corridor_b",  "to": "staff_room",  "steps": 12,  "heading": 90},
+    {"from": "staff_room",  "to": "corridor_b",  "steps": 12,  "heading": 270},
+
+    {"from": "corridor_b",  "to": "hod_office",  "steps": 20,  "heading": 90},
+    {"from": "hod_office",  "to": "corridor_b",  "steps": 20,  "heading": 270},
+
+    {"from": "lobby",       "to": "washroom",    "steps": 6,   "heading": 270},
+    {"from": "washroom",    "to": "lobby",       "steps": 6,   "heading": 90},
+
+    {"from": "lobby",       "to": "stairs_up",   "steps": 15,  "heading": 315},
+    {"from": "stairs_up",   "to": "lobby",       "steps": 15,  "heading": 135},
+
+    {"from": "entrance",    "to": "canteen",     "steps": 15,  "heading": 90},
+    {"from": "canteen",     "to": "entrance",    "steps": 15,  "heading": 270}
+  ]
+}

@@ -1,0 +1,21 @@
+# .env — never commit API keys
+.env
+
+# Android build artifacts
+/android/.gradle
+/android/app/build
+/android/local.properties
+/android/key.properties
+
+# iOS
+/ios/Pods
+/ios/.symlinks
+
+# Flutter
+/.dart_tool
+/.flutter-plugins
+/.flutter-plugins-dependencies
+/build
+*.iml
+.idea/
+.vscode/

@@ -1,0 +1,15 @@
+analyzer:
+  exclude:
+    - "**/*.g.dart"
+    - build/**
+    - android/**
+    - ios/**
+    - web/**
+    - windows/**
+    - macos/**
+    - linux/**
+linter:
+  rules:
+    - prefer_const_constructors
+    - prefer_final_fields
+    - use_key_in_widget_constructors

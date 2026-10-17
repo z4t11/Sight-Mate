@@ -1,0 +1,45 @@
+name: sight_mate
+description: A voice-controlled camera companion for blind and low-vision users.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Voice
+  speech_to_text: ^7.0.0
+  flutter_tts: ^4.2.0
+
+  # Camera
+  camera: ^0.12.1
+
+  # AI / Vision
+  google_generative_ai: ^0.4.6
+  google_mlkit_text_recognition: ^0.13.1
+
+  # Sensors & Motion
+  sensors_plus: ^6.1.0
+  pedometer: ^4.0.2
+  vibration: ^3.2.1
+
+  # Utilities
+  flutter_dotenv: ^5.2.1
+  wakelock_plus: ^1.2.10
+  permission_handler: ^11.3.1
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  assets:
+    - .env
+    - assets/maps/
+    - assets/photos/
