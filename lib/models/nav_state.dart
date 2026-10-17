@@ -2,6 +2,9 @@
 class NavState {
   final String? currentNodeId;
   final String? customLocationName;
+  final String? activeDestination;
+  final double? latitude;
+  final double? longitude;
   final List<String> route;       // ordered list of node IDs to destination
   final int routeIndex;           // which step of route we're on
   final int stepsSinceLast;       // steps walked since last confirmed landmark
@@ -12,6 +15,9 @@ class NavState {
   const NavState({
     this.currentNodeId,
     this.customLocationName,
+    this.activeDestination,
+    this.latitude,
+    this.longitude,
     this.route = const [],
     this.routeIndex = 0,
     this.stepsSinceLast = 0,
@@ -27,10 +33,14 @@ class NavState {
       currentNodeId != null || customLocationName != null;
   String? get locationDisplayName =>
       customLocationName ?? currentNodeId;
+  bool get hasGps => latitude != null && longitude != null;
 
   NavState copyWith({
     String? currentNodeId,
     String? customLocationName,
+    String? activeDestination,
+    double? latitude,
+    double? longitude,
     List<String>? route,
     int? routeIndex,
     int? stepsSinceLast,
@@ -39,6 +49,7 @@ class NavState {
     bool? isNavigating,
     bool clearCurrentNode = false,
     bool clearCustomLocation = false,
+    bool clearRoute = false,
   }) =>
       NavState(
         currentNodeId:
@@ -46,7 +57,10 @@ class NavState {
         customLocationName: clearCustomLocation
             ? null
             : (customLocationName ?? this.customLocationName),
-        route: route ?? this.route,
+        activeDestination: activeDestination ?? this.activeDestination,
+        latitude: latitude ?? this.latitude,
+        longitude: longitude ?? this.longitude,
+        route: clearRoute ? const [] : (route ?? this.route),
         routeIndex: routeIndex ?? this.routeIndex,
         stepsSinceLast: stepsSinceLast ?? this.stepsSinceLast,
         confidence: confidence ?? this.confidence,

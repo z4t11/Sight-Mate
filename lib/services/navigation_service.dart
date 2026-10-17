@@ -4,12 +4,19 @@ import 'map_loader.dart';
 import 'positioning_service.dart';
 import 'app_config.dart';
 
+import 'gps_service.dart';
+
 /// Orchestrates navigation: route planning, spoken instructions, re-routing.
 class NavigationService {
   final MapLoader map;
   final PositioningService positioning;
+  final GpsService? gps;
 
-  NavigationService({required this.map, required this.positioning});
+  NavigationService({
+    required this.map,
+    required this.positioning,
+    this.gps,
+  });
 
   /// Plan a route from current position to [destination] name.
   /// Returns a spoken instruction or error.
@@ -46,6 +53,7 @@ class NavigationService {
       route: path,
       routeIndex: 0,
       isNavigating: true,
+      activeDestination: goalNode.name,
     ));
 
     return _nextInstruction();
@@ -144,11 +152,25 @@ class NavigationService {
   /// Stop navigation.
   void cancelNavigation() {
     positioning.updateState(positioning.state.copyWith(
-      route: const [],
+      clearRoute: true,
       routeIndex: 0,
       isNavigating: false,
     ));
   }
+
+  /// Total estimated steps remaining in the current active route.
+  int? getRemainingSteps() {
+    final state = positioning.state;
+    if (!state.hasRoute) return null;
+    int total = 0;
+    for (int i = state.routeIndex; i < state.route.length - 1; i++) {
+      final edge = map.getEdge(state.route[i], state.route[i + 1]);
+      if (edge != null) total += edge.steps;
+    }
+    return total;
+  }
+
+  String getNextInstruction() => _nextInstruction();
 
   String _arrivalMessage() {
     final state = positioning.state;

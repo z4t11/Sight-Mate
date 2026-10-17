@@ -145,6 +145,64 @@ Keep it strictly to 1 or 2 sentences. Use friendly, direct, hedge language ("loo
     }
   }
 
+  /// Combines map/GPS context with the camera view to navigate step-by-step
+  /// while detecting and navigating around ground-level obstacles with precise step deviations.
+  Future<String> askObstacleAwareNavigation({
+    required String destination,
+    required Uint8List? imageBytes,
+    String? currentPosition,
+    double? headingDegrees,
+    double? macroDistanceMeters,
+    int? stepsRemaining,
+  }) async {
+    if (AppConfig.isMockMode || imageBytes == null) {
+      return "Walk straight for 4 steps. There looks to be a small cable on your right; step slightly to the left, then continue.";
+    }
+
+    try {
+      final contextItems = <String>[
+        'Destination: "$destination"',
+        if (currentPosition != null) 'Current Spot: "$currentPosition"',
+        if (macroDistanceMeters != null)
+          'GPS Distance: ${macroDistanceMeters.round()}m',
+        if (stepsRemaining != null) 'Map steps: ~$stepsRemaining steps',
+        if (headingDegrees != null) 'Heading: ${headingDegrees.round()}°',
+      ];
+
+      final prompt = '''
+You are a live sighted-navigation companion walking with a blind or low-vision pedestrian.
+Navigation Context: ${contextItems.join(', ')}.
+
+Analyze the user's camera view of the walkway directly ahead:
+1. OBSTACLE SCAN: Closely inspect the floor, ground, and knee-level path for ANY obstacles — even small ones:
+   - Small hazards: shoes, cables, toys, mats, puddles, small drops, raised thresholds, uneven pavement.
+   - Larger obstacles: chairs, trash cans, open doors, pillars, bikes, bushes, people.
+2. TACTICAL DEVIATION & STEP INSTRUCTION:
+   - If an obstacle is in the path: Give the user an EXACT step-based detour instruction. For example:
+     - "Walk 3 steps forward, take a 1-step deviation to your right to bypass a low box, then continue straight."
+     - "Careful: small raised threshold 2 steps ahead. Step high, then walk straight for 5 steps."
+   - If path is clear: Tell them how many steps to walk straight ahead towards $destination.
+3. CONSTRAINTS:
+   - Maximum 2 sentences.
+   - Crisp, actionable, and direct.
+   - Use hedge words ("looks like", "seems to be", "I think"). Never say anything is "completely safe".
+''';
+
+      final model = _getModel();
+      final response = await model.generateContent([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ])
+      ]);
+      return response.text?.trim() ??
+          "Path looks clear for 4 steps ahead towards $destination.";
+    } catch (e) {
+      print('SIGHT_MATE [OBSTACLE NAV ERROR]: $e');
+      return "Continue carefully towards $destination for 3 steps. Watch your footing.";
+    }
+  }
+
   /// Ask Gemini to describe where the user is based on the camera scene in 2-5 words.
   Future<String?> recognizeLocationFromScene(Uint8List imageBytes) async {
     if (AppConfig.isMockMode) return "main entrance";

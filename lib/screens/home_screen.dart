@@ -14,6 +14,7 @@ import '../services/gemini_service.dart';
 import '../services/map_loader.dart';
 import '../services/positioning_service.dart';
 import '../services/navigation_service.dart';
+import '../services/gps_service.dart';
 
 enum _ListenState { idle, listening, processing }
 
@@ -33,6 +34,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _camera   = CameraService();
   final _gemini   = GeminiService();
   final _map      = MapLoader();
+  final _gps      = GpsService();
 
   late PositioningService _positioning;
   late NavigationService  _nav;
@@ -46,8 +48,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _positioning = PositioningService(_map);
-    _nav = NavigationService(map: _map, positioning: _positioning);
+    _positioning = PositioningService(_map, _gps);
+    _nav = NavigationService(map: _map, positioning: _positioning, gps: _gps);
     _init();
   }
 
@@ -74,6 +76,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       Permission.microphone,
       Permission.camera,
       Permission.activityRecognition,
+      Permission.location,
     ].request();
 
     final sttOk = await _stt.init();
@@ -82,6 +85,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     await _camera.init();
+    await _gps.init();
     _positioning.start();
 
     if (mounted) setState(() {});
@@ -97,6 +101,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await _tts.stop();
       await _stt.cancel();
       _setListenState(_ListenState.idle, 'Stopped. Tap to ask again.');
+      return;
+    }
+
+    // If currently navigating: tapping provides live camera obstacle check & step deviation!
+    if (_positioning.state.isNavigating) {
+      await _provideNextObstacleAwareStep();
       return;
     }
 
@@ -143,6 +153,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     switch (intent.type) {
       case AppIntentType.stopSpeech:
         await _tts.stop();
+        if (_positioning.state.isNavigating) {
+          _nav.cancelNavigation();
+          await _tts.speak('Navigation stopped.');
+        }
         _setListenState(_ListenState.idle, 'Stopped. Tap to ask.');
         return;
 
@@ -209,7 +223,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           await _tts.speak("Got it. I've set your starting location to $loc.");
         }
 
-      // ── Navigate ────────────────────────────────────────────────────────
+      // ── Navigate (GPS + Map + Camera Obstacle Avoidance) ────────────────
       case AppIntentType.navigate:
         await HapticService.thinking();
         final rawDest = intent.slot?.trim();
@@ -229,8 +243,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           }
 
           if (_positioning.state.currentNodeId != null) {
-            final result = _nav.handleNavigateCommand(dest);
-            await _tts.speak(result);
+            final routeMsg = _nav.handleNavigateCommand(dest);
+            await _tts.speak(routeMsg);
+            // Scan path with camera for immediate ground obstacles & step guidance
+            await _provideNextObstacleAwareStep(dest);
           } else {
             await _tts.speak(
               "I found $dest on the campus map, but where are you starting from? "
@@ -238,16 +254,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             );
           }
         } else {
-          // Visual Micro-Navigation (Point-to-Point in view, e.g. "point b", "bathroom", "door")
-          _setListenState(_ListenState.processing, 'Guiding you to $dest…');
-          final frame = await _camera.captureFrame();
-          final guidance = await _gemini.askVisualGuidance(
-            target: dest,
-            imageBytes: frame,
-            currentPosition: _positioning.state.locationDisplayName,
-          );
-          _positioning.setCustomLocation("En route to $dest");
-          await _tts.speak(guidance);
+          // Visual Micro-Navigation with Obstacle Avoidance & Step Deviations
+          _positioning.setCustomLocation("Origin spot");
+          _positioning.updateState(_positioning.state.copyWith(
+            isNavigating: true,
+            activeDestination: dest,
+          ));
+          await _provideNextObstacleAwareStep(dest);
         }
 
       // ── Movie Mode ──────────────────────────────────────────────────────
@@ -273,6 +286,36 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       _state     = state;
       _statusMsg = msg;
     });
+  }
+
+  /// Combined Map + GPS + Camera Live Obstacle Avoidance & Step Deviation Guidance
+  Future<void> _provideNextObstacleAwareStep([String? targetDest]) async {
+    final dest = targetDest ??
+        _positioning.state.activeDestination ??
+        'your destination';
+
+    _setListenState(_ListenState.processing, 'Scanning path to $dest…');
+    await HapticService.thinking();
+
+    final frame = await _camera.captureFrame();
+    final remainingSteps = _nav.getRemainingSteps();
+    final state = _positioning.state;
+
+    // Ask Gemini for obstacle-aware micro-guidance with exact step deviations
+    final instruction = await _gemini.askObstacleAwareNavigation(
+      destination: dest,
+      imageBytes: frame,
+      currentPosition: state.locationDisplayName,
+      headingDegrees: state.headingDegrees,
+      stepsRemaining: remainingSteps,
+    );
+
+    _setListenState(_ListenState.processing, 'Speaking…');
+    await _tts.speak(instruction);
+    _setListenState(
+      _ListenState.idle,
+      'Navigating to $dest. Tap screen for next step or obstacle check.',
+    );
   }
 
   // ── UI ─────────────────────────────────────────────────────────────────
@@ -435,6 +478,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           _statusDot(_camera.isReady, 'Cam'),
                           const SizedBox(width: 16),
                           _statusDot(!_map.isEmpty, 'Map'),
+                          const SizedBox(width: 16),
+                          _statusDot(_gps.isGpsAvailable || AppConfig.isMockMode, 'GPS'),
                         ],
                       ),
                     ),
@@ -476,6 +521,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _stt.stop();
     _tts.stop();
+    _gps.dispose();
     _camera.dispose();
     _positioning.dispose();
     super.dispose();

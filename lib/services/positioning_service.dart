@@ -8,12 +8,14 @@ import '../models/nav_state.dart';
 import 'map_loader.dart';
 import 'app_config.dart';
 
+import 'gps_service.dart';
+
 /// Positioning engine: determines the user's current location node.
-/// Strategy: OCR signs → match expected_signs → confirm landmark → 
-/// between landmarks: step counting + compass → drift correction at each landmark.
-/// Low confidence → ask user ("I think you're near Room 204, is that right?").
+/// Strategy: GPS (macro) + OCR signs (micro landmarks) + 
+/// step counting + compass heading for dead reckoning.
 class PositioningService {
   final MapLoader _map;
+  final GpsService? _gps;
   final TextRecognizer _textRecognizer = TextRecognizer();
 
   NavState _state = const NavState();
@@ -22,20 +24,32 @@ class PositioningService {
 
   StreamSubscription? _compassSub;
   StreamSubscription? _stepSub;
+  Timer? _gpsTimer;
 
   NavState get state => _state;
 
-  PositioningService(this._map);
+  PositioningService(this._map, [this._gps]);
 
-  /// Start listening to compass + pedometer.
+  /// Start listening to compass + pedometer + GPS.
   void start() {
     // Compass heading
     _compassSub = magnetometerEventStream().listen((event) {
-      // Simple heading from magnetometer (good enough for indoor relative turns).
-      // atan2-based heading in degrees.
       _heading = _calculateHeading(event.x, event.y);
       _state = _state.copyWith(headingDegrees: _heading);
     });
+
+    // Poll GPS coordinates periodically
+    if (_gps != null) {
+      _gpsTimer = Timer.periodic(const Duration(seconds: 3), (_) {
+        final pos = _gps?.currentPosition;
+        if (pos != null) {
+          _state = _state.copyWith(
+            latitude: pos.latitude,
+            longitude: pos.longitude,
+          );
+        }
+      });
+    }
 
     // Step counter
     _stepSub = Pedometer.stepCountStream.listen((event) {
@@ -175,6 +189,7 @@ class PositioningService {
   }
 
   void dispose() {
+    _gpsTimer?.cancel();
     _compassSub?.cancel();
     _stepSub?.cancel();
     _textRecognizer.close();
