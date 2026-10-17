@@ -180,27 +180,75 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         await HapticService.thinking();
         _setListenState(_ListenState.processing, 'Checking position…');
 
-        // Try OCR match first
-        await _positioning.tryOcrMatch(_camera.controller);
+        // 1. Try OCR match if no known location
+        if (!_positioning.state.hasKnownLocation) {
+          await _positioning.tryOcrMatch(_camera.controller);
+        }
+
+        // 2. If still unknown, visually recognize scene with Gemini
+        if (!_positioning.state.hasKnownLocation && _camera.isReady) {
+          final frame = await _camera.captureFrame();
+          if (frame != null) {
+            final scene = await _gemini.recognizeLocationFromScene(frame);
+            if (scene != null) {
+              _positioning.setCustomLocation(scene);
+            }
+          }
+        }
 
         final desc = _positioning.describeLocation();
         await _tts.speak(desc);
 
+      // ── Set Location / Starting Point ────────────────────────────────────
+      case AppIntentType.setLocation:
+        final loc = intent.slot?.trim();
+        if (loc == null || loc.isEmpty) {
+          await _tts.speak("Tell me where you are, for example 'I am at Point A' or 'I am at the entrance'.");
+        } else {
+          _positioning.setCustomLocation(loc);
+          await _tts.speak("Got it. I've set your starting location to $loc.");
+        }
+
       // ── Navigate ────────────────────────────────────────────────────────
       case AppIntentType.navigate:
         await HapticService.thinking();
-        final dest = intent.slot?.isNotEmpty == true
-            ? intent.slot!
+        final rawDest = intent.slot?.trim();
+        final dest = (rawDest != null && rawDest.isNotEmpty)
+            ? rawDest
             : 'that destination';
-        _setListenState(_ListenState.processing, 'Planning route to $dest…');
 
-        // Ensure we know position
-        if (_positioning.state.currentNodeId == null) {
-          await _positioning.tryOcrMatch(_camera.controller);
+        // Check if destination is on the campus graph
+        final isCampusDest = _map.findByName(dest) != null;
+
+        if (isCampusDest) {
+          _setListenState(_ListenState.processing, 'Planning campus route to $dest…');
+
+          // Ensure we know starting node
+          if (_positioning.state.currentNodeId == null) {
+            await _positioning.tryOcrMatch(_camera.controller);
+          }
+
+          if (_positioning.state.currentNodeId != null) {
+            final result = _nav.handleNavigateCommand(dest);
+            await _tts.speak(result);
+          } else {
+            await _tts.speak(
+              "I found $dest on the campus map, but where are you starting from? "
+              "Say 'I am at' followed by your location, or point at a sign.",
+            );
+          }
+        } else {
+          // Visual Micro-Navigation (Point-to-Point in view, e.g. "point b", "bathroom", "door")
+          _setListenState(_ListenState.processing, 'Guiding you to $dest…');
+          final frame = await _camera.captureFrame();
+          final guidance = await _gemini.askVisualGuidance(
+            target: dest,
+            imageBytes: frame,
+            currentPosition: _positioning.state.locationDisplayName,
+          );
+          _positioning.setCustomLocation("En route to $dest");
+          await _tts.speak(guidance);
         }
-
-        final result = _nav.handleNavigateCommand(dest);
-        await _tts.speak(result);
 
       // ── Movie Mode ──────────────────────────────────────────────────────
       case AppIntentType.movieMode:

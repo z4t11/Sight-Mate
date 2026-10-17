@@ -1,5 +1,4 @@
 import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'package:camera/camera.dart';
 
 /// Handles camera initialisation and single-frame capture.
@@ -38,30 +37,17 @@ class CameraService {
     }
   }
 
-  /// Capture one frame, downscale to ≤768px on the longest side, return PNG bytes.
+  /// Capture one frame as JPEG bytes (~720p from hardware ISP).
+  /// Fast and lightweight — no software PNG re-encoding overhead.
   /// Returns null if camera not ready or capture fails.
   Future<Uint8List?> captureFrame() async {
     if (!isReady) return null;
     try {
       final xfile = await _controller!.takePicture();
-      final rawBytes = await xfile.readAsBytes();
-      return await _resize(rawBytes, 768);
+      return await xfile.readAsBytes();
     } catch (_) {
       return null;
     }
-  }
-
-  /// Resize using Flutter's built-in codec (no extra packages).
-  Future<Uint8List> _resize(Uint8List bytes, int maxDim) async {
-    final codec = await ui.instantiateImageCodec(
-      bytes,
-      targetWidth: maxDim,
-    );
-    final frame = await codec.getNextFrame();
-    final byteData =
-        await frame.image.toByteData(format: ui.ImageByteFormat.png);
-    frame.image.dispose();
-    return byteData!.buffer.asUint8List();
   }
 
   Future<void> dispose() async {

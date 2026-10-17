@@ -26,3 +26,5 @@ One-line log of design choices made during development.
 - 2026-10-15: Updated Gemini vision model from gemini-1.5-flash to gemini-2.5-flash for current API support
 - 2026-10-16: Updated Gemini vision model to gemini-3.8-flash per Google API requirement for new users
 - 2026-10-16: Switched default vision model to `gemini-3.5-flash-lite` (configurable via `GEMINI_MODEL` in `.env`): 2x higher rate limit (30 RPM vs 15 RPM), 4x token bandwidth (4M TPM vs 1M TPM), and 3x faster response speed (~1.9s vs ~6s) on the free tier.
+- 2026-10-18: Latency optimization: STT silence detection reduced from 4.0s to 1.4s with search mode; CameraService switched to direct hardware JPEG bytes (bypassing slow 800ms software PNG re-encoding and cutting network payload by 80%).
+- 2026-10-18: Positioning & Navigation enhancement: Added spoken location setting ("I am at Point A"), Gemini visual scene relocalization for "Where am I?", and dual-layer navigation: campus graph Dijkstra routing for campus nodes, plus Gemini visual spatial micro-guidance for real-world visible targets (e.g. Point A -> Point B, doors, objects).

@@ -22,12 +22,30 @@ class IntentRouter {
           slot: 'stop');
     }
 
+    // ── Set Location / Origin ─────────────────────────────────────
+    if (_contains(t, [
+      'i am standing at', "i'm standing at",
+      'i am at', "i'm at", 'i am in', "i'm in",
+      'start from', 'start at', 'my location is', 'set location to',
+    ])) {
+      final loc = _extractAfter(t, [
+        'i am standing at', "i'm standing at",
+        'i am at', "i'm at", 'i am in', "i'm in",
+        'start from', 'start at', 'my location is', 'set location to',
+      ]);
+      return AppIntent(type: AppIntentType.setLocation, rawText: text, slot: loc);
+    }
+
     // ── Navigation ────────────────────────────────────────────────
-    if (_contains(t, ['take me to', 'navigate to', 'go to', 'directions to',
-                       'how do i get to'])) {
+    if (_contains(t, [
+      'take me to', 'navigate me to', 'navigate to', 'guide me to',
+      'take me', 'directions to', 'how do i get to', 'go to', 'walk to',
+      'lead me to',
+    ])) {
       final dest = _extractAfter(t, [
-        'take me to', 'navigate to', 'go to', 'directions to',
-        'how do i get to',
+        'take me to', 'navigate me to', 'navigate to', 'guide me to',
+        'take me', 'directions to', 'how do i get to', 'go to', 'walk to',
+        'lead me to',
       ]);
       return AppIntent(type: AppIntentType.navigate, rawText: text, slot: dest);
     }

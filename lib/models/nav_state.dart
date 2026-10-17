@@ -1,6 +1,7 @@
 /// Runtime navigation state — current position, route, confidence.
 class NavState {
   final String? currentNodeId;
+  final String? customLocationName;
   final List<String> route;       // ordered list of node IDs to destination
   final int routeIndex;           // which step of route we're on
   final int stepsSinceLast;       // steps walked since last confirmed landmark
@@ -10,6 +11,7 @@ class NavState {
 
   const NavState({
     this.currentNodeId,
+    this.customLocationName,
     this.route = const [],
     this.routeIndex = 0,
     this.stepsSinceLast = 0,
@@ -21,9 +23,14 @@ class NavState {
   bool get hasRoute => route.isNotEmpty;
   bool get isAtDestination =>
       hasRoute && routeIndex >= route.length - 1;
+  bool get hasKnownLocation =>
+      currentNodeId != null || customLocationName != null;
+  String? get locationDisplayName =>
+      customLocationName ?? currentNodeId;
 
   NavState copyWith({
     String? currentNodeId,
+    String? customLocationName,
     List<String>? route,
     int? routeIndex,
     int? stepsSinceLast,
@@ -31,10 +38,14 @@ class NavState {
     double? headingDegrees,
     bool? isNavigating,
     bool clearCurrentNode = false,
+    bool clearCustomLocation = false,
   }) =>
       NavState(
         currentNodeId:
             clearCurrentNode ? null : (currentNodeId ?? this.currentNodeId),
+        customLocationName: clearCustomLocation
+            ? null
+            : (customLocationName ?? this.customLocationName),
         route: route ?? this.route,
         routeIndex: routeIndex ?? this.routeIndex,
         stepsSinceLast: stepsSinceLast ?? this.stepsSinceLast,

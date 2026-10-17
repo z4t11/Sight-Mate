@@ -26,16 +26,28 @@ class SttService {
       onDone();
       return;
     }
+    bool completed = false;
+    String lastWords = '';
+
+    void dispatch(String text) {
+      if (completed) return;
+      completed = true;
+      onResult(text);
+      onDone();
+    }
+
     await _stt.listen(
       onResult: (result) {
-        if (result.finalResult) {
-          onResult(result.recognizedWords);
+        lastWords = result.recognizedWords;
+        if (result.finalResult && lastWords.trim().isNotEmpty) {
+          dispatch(lastWords);
         }
       },
       listenOptions: stt.SpeechListenOptions(
-        listenFor: const Duration(seconds: 20),
-        pauseFor: const Duration(seconds: 4),
-        listenMode: stt.ListenMode.confirmation,
+        listenFor: const Duration(seconds: 15),
+        pauseFor: const Duration(milliseconds: 1400),
+        listenMode: stt.ListenMode.search,
+        cancelOnError: true,
       ),
     );
   }

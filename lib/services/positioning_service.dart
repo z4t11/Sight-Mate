@@ -90,34 +90,57 @@ class PositioningService {
   /// Manually confirm location (e.g., user says "yes" to "I think you're near…").
   void confirmLocation(String nodeId) => _confirmLandmark(nodeId);
 
+  /// Set a user-specified or visually-inferred location (e.g., "Point A", "bedroom").
+  void setCustomLocation(String locationName) {
+    final clean = locationName.trim();
+    if (clean.isEmpty) return;
+
+    // If it matches a known map node, link to that node directly
+    final match = _map.findByName(clean);
+    if (match != null) {
+      _confirmLandmark(match.id);
+    } else {
+      _state = _state.copyWith(
+        customLocationName: clean,
+        confidence: 1.0,
+        stepsSinceLast: 0,
+        clearCurrentNode: true,
+      );
+    }
+  }
+
   void _confirmLandmark(String nodeId) {
     _state = _state.copyWith(
       currentNodeId: nodeId,
       stepsSinceLast: 0,
       confidence: 1.0,
+      clearCustomLocation: true,
     );
   }
 
   /// Generate a spoken description of current position for "where am I?".
   String describeLocation() {
     final nodeId = _state.currentNodeId;
-    if (nodeId == null || _map.nodes[nodeId] == null) {
-      return "I'm not sure where you are right now. "
-          "Try pointing your camera at a sign or room number.";
+    if (nodeId != null && _map.nodes[nodeId] != null) {
+      final node = _map.nodes[nodeId]!;
+      if (_state.confidence >= 0.7) {
+        return "I think you're near ${node.name}. Is that right?";
+      } else if (_state.confidence >= 0.4) {
+        return "I'm not too sure, but you might be near ${node.name}. "
+            "About ${_state.stepsSinceLast} steps since I last confirmed.";
+      } else {
+        return "I've lost track a bit. You were near ${node.name}, "
+            "but that was about ${_state.stepsSinceLast} steps ago.";
+      }
     }
 
-    final node = _map.nodes[nodeId]!;
-    if (_state.confidence >= 0.7) {
-      return "I think you're near ${node.name}. Is that right?";
-    } else if (_state.confidence >= 0.4) {
-      return "I'm not too sure, but you might be near ${node.name}. "
-          "About ${_state.stepsSinceLast} steps since I last confirmed. "
-          "Can you see a sign?";
-    } else {
-      return "I've lost track a bit. You were near ${node.name}, "
-          "but that was about ${_state.stepsSinceLast} steps ago. "
-          "Try pointing your camera at a sign so I can reposition.";
+    if (_state.customLocationName != null) {
+      return "You are at ${_state.customLocationName}. "
+          "You can ask what is in front of you, or tell me where you'd like to walk.";
     }
+
+    return "I'm not sure where you are right now. "
+        "Point your camera at a sign, or say 'I am at' followed by your location.";
   }
 
   /// Update state for navigation (external callers).

@@ -3,6 +3,7 @@ enum AppIntentType {
   askCamera,    // "what's in front of me?", "describe this"
   whereAmI,     // "where am I?"
   navigate,     // "take me to ___"
+  setLocation,  // "I am at ___", "I'm in ___", "start at ___"
   movieMode,    // "start movie mode"
   stopSpeech,   // "stop"
   setVerbosity, // "set verbosity to brief"

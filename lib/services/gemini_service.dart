@@ -72,7 +72,7 @@ VERBOSITY MODES (the user message will tell you which to use):
       final parts = <Part>[];
       parts.add(TextPart('Verbosity: ${verbosity.label}.'));
       if (imageBytes != null) {
-        parts.add(DataPart('image/png', imageBytes));
+        parts.add(DataPart('image/jpeg', imageBytes));
       }
       parts.add(TextPart(question));
 
@@ -107,6 +107,64 @@ VERBOSITY MODES (the user message will tell you which to use):
         return "I can't reach the internet right now. Please check your connection.";
       }
       return "Something went wrong. Please try again.";
+    }
+  }
+
+  /// Direct spatial guidance to a visible target / destination in front of the user.
+  Future<String> askVisualGuidance({
+    required String target,
+    required Uint8List? imageBytes,
+    String? currentPosition,
+  }) async {
+    if (AppConfig.isMockMode || imageBytes == null) {
+      return "Looks like $target is straight ahead, about 3 steps away. The path seems clear.";
+    }
+
+    try {
+      final prompt = '''
+The user is a blind or low-vision person who wants to reach: "$target".
+${currentPosition != null ? 'Current known starting position: "$currentPosition".' : ''}
+Look at the camera image. Give direct, concise spatial walking directions:
+1. Direction (e.g. "straight ahead", "slightly to your left", "at 2 o'clock").
+2. Estimated distance (in steps or metres).
+3. Any immediate floor obstacles, steps, or hazards in their path.
+If "$target" is not visible in the frame, tell them to turn slowly until it comes into view.
+Keep it strictly to 1 or 2 sentences. Use friendly, direct, hedge language ("looks like", "seems to be"). Never say "safe".
+''';
+      final model = _getModel();
+      final response = await model.generateContent([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ])
+      ]);
+      return response.text?.trim() ?? "Looks like $target is ahead, but the view is unclear.";
+    } catch (e) {
+      print('SIGHT_MATE [VISUAL GUIDANCE ERROR]: $e');
+      return "I couldn't get a clear look at $target. Try pointing your camera ahead.";
+    }
+  }
+
+  /// Ask Gemini to describe where the user is based on the camera scene in 2-5 words.
+  Future<String?> recognizeLocationFromScene(Uint8List imageBytes) async {
+    if (AppConfig.isMockMode) return "main entrance";
+    try {
+      final prompt = '''
+Look at this image. Where is the user standing right now?
+Respond with ONLY a short 2-5 word description of the spot or room (e.g. "bedroom doorway", "near the desk", "hallway corridor", "office entrance").
+No extra words or punctuation.
+''';
+      final model = _getModel();
+      final response = await model.generateContent([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ])
+      ]);
+      final text = response.text?.trim();
+      return (text != null && text.isNotEmpty) ? text : null;
+    } catch (_) {
+      return null;
     }
   }
 
