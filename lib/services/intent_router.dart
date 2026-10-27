@@ -11,13 +11,68 @@ class IntentRouter {
       return AppIntent(type: AppIntentType.stopSpeech, rawText: text);
     }
 
+    // ── Emergency SOS (Priority 2) ────────────────────────────────
+    if (_contains(t, [
+      'emergency', 'help', 'send sos', 'i need help', 'sos',
+      'share my location', 'send my location', 'alert someone',
+    ])) {
+      return AppIntent(type: AppIntentType.emergencySos, rawText: text);
+    }
+
+    // ── Safety Guardian Mode ──────────────────────────────────────
+    if (_contains(t, [
+      'stop safety mode', 'exit safety mode', 'end safety mode',
+      'stop guardian', 'stop safety',
+    ])) {
+      return AppIntent(
+          type: AppIntentType.safetyGuardian, rawText: text, slot: 'stop');
+    }
+    if (_contains(t, [
+      'start safety mode', 'safety mode', 'guardian mode', 'watch for hazards',
+      'hazard scan', 'hazard mode', 'safety guardian', 'scan hazards',
+    ])) {
+      return AppIntent(
+          type: AppIntentType.safetyGuardian, rawText: text, slot: 'start');
+    }
+
+    // ── Diagnostics / Self-Test ───────────────────────────────────
+    if (_contains(t, [
+      'run diagnostics', 'system test', 'check health', 'test log',
+      'test app', 'self test', 'diagnostics', 'health check',
+    ])) {
+      return AppIntent(type: AppIntentType.runDiagnostics, rawText: text);
+    }
+
+    // ── Route Recorder Mode ("Scan & Save") ─────────────────────────
+    if (_contains(t, [
+      'record a route', 'record route', 'map a route', 'map route',
+      'scan route', 'save route', 'save a route', 'scan and save',
+      'record path', 'record hallway', 'start route recording',
+    ])) {
+      return AppIntent(type: AppIntentType.recordRoute, rawText: text);
+    }
+
+    // ── Sign Language Bridge Mode ─────────────────────────────────
+    if (_contains(t, [
+      'sign language', 'sign mode', 'bridge mode', 'translate signs',
+      'deaf mode', 'mute mode', 'sign to voice', 'start sign', 'hand sign',
+      'enable sign mode', 'switch to sign mode', 'activate sign mode',
+      'open sign mode'
+    ])) {
+      return AppIntent(type: AppIntentType.signBridgeMode, rawText: text);
+    }
+
     // ── Movie Mode ────────────────────────────────────────────────
-    if (_contains(t, ['start movie mode', 'movie mode', 'cinema mode',
-                       'start movie', 'enable movie'])) {
+    if (_contains(t, [
+      'start movie mode', 'movie mode', 'cinema mode', 'start movie',
+      'enable movie', 'open movie mode', 'switch to movie mode',
+      'audio describer', 'movie describer', 'describe movie',
+      'cinema companion', 'watch movie', 'watching a movie',
+    ])) {
       return AppIntent(type: AppIntentType.movieMode, rawText: text,
           slot: 'start');
     }
-    if (_contains(t, ['stop movie', 'end movie', 'exit movie'])) {
+    if (_contains(t, ['stop movie', 'end movie', 'exit movie', 'close movie'])) {
       return AppIntent(type: AppIntentType.movieMode, rawText: text,
           slot: 'stop');
     }
@@ -40,12 +95,12 @@ class IntentRouter {
     if (_contains(t, [
       'take me to', 'navigate me to', 'navigate to', 'guide me to',
       'take me', 'directions to', 'how do i get to', 'go to', 'walk to',
-      'lead me to',
+      'lead me to', 'navigate from', 'route from', 'how to reach',
     ])) {
       final dest = _extractAfter(t, [
         'take me to', 'navigate me to', 'navigate to', 'guide me to',
         'take me', 'directions to', 'how do i get to', 'go to', 'walk to',
-        'lead me to',
+        'lead me to', 'navigate from', 'route from', 'how to reach',
       ]);
       return AppIntent(type: AppIntentType.navigate, rawText: text, slot: dest);
     }

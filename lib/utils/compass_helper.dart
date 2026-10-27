@@ -39,4 +39,20 @@ class CompassHelper {
     return d;
   }
 
+  /// Returns a turn instruction ("Turn left", "Turn right", "Turn slightly left", "Turn slightly right", "Turn around", or "Continue straight")
+  /// when transitioning from [fromHeading] to [toHeading].
+  static String turnInstruction(double fromHeading, double toHeading) {
+    double diff = (toHeading - fromHeading) % 360;
+    if (diff < 0) diff += 360;
+
+    if (diff <= 25 || diff >= 335) return 'Continue straight';
+    if (diff > 25 && diff < 65) return 'Bear slightly right';
+    if (diff >= 65 && diff <= 125) return 'Turn right';
+    if (diff > 125 && diff < 160) return 'Make a sharp right';
+    if (diff >= 160 && diff <= 200) return 'Turn around';
+    if (diff > 200 && diff < 235) return 'Make a sharp left';
+    if (diff >= 235 && diff <= 295) return 'Turn left';
+    return 'Bear slightly left';
+  }
+
 }

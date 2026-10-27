@@ -33,6 +33,7 @@ dependencies:
   path_provider: ^2.1.5
   shared_preferences: ^2.3.3
   geolocator: ^14.0.1
+  flutter_hand_gesture: ^2.1.1
 
 dev_dependencies:
   flutter_test:

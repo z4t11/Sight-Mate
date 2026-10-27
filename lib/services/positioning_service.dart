@@ -25,8 +25,11 @@ class PositioningService {
   StreamSubscription? _compassSub;
   StreamSubscription? _stepSub;
   Timer? _gpsTimer;
+  final StreamController<int> _stepController = StreamController<int>.broadcast();
 
   NavState get state => _state;
+  double get currentHeading => _heading;
+  Stream<int> get onStepStream => _stepController.stream;
 
   PositioningService(this._map, [this._gps]);
 
@@ -60,6 +63,7 @@ class PositioningService {
       final delta = event.steps - _lastStepCount;
       _lastStepCount = event.steps;
       if (delta > 0) {
+        _stepController.add(delta);
         _state = _state.copyWith(
           stepsSinceLast: _state.stepsSinceLast + delta,
           // Confidence decays as steps accumulate without a landmark
@@ -192,6 +196,7 @@ class PositioningService {
     _gpsTimer?.cancel();
     _compassSub?.cancel();
     _stepSub?.cancel();
+    _stepController.close();
     _textRecognizer.close();
   }
 }

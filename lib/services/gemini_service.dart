@@ -160,35 +160,19 @@ Keep it strictly to 1 or 2 sentences. Use friendly, direct, hedge language ("loo
     }
 
     try {
-      final contextItems = <String>[
-        'Destination: "$destination"',
-        if (currentPosition != null) 'Current Spot: "$currentPosition"',
-        if (macroDistanceMeters != null)
-          'GPS Distance: ${macroDistanceMeters.round()}m',
-        if (stepsRemaining != null) 'Map steps: ~$stepsRemaining steps',
-        if (headingDegrees != null) 'Heading: ${headingDegrees.round()}°',
-      ];
-
       final prompt = '''
-You are a live sighted-navigation companion walking with a blind or low-vision pedestrian.
-Navigation Context: ${contextItems.join(', ')}.
-
-Analyze the user's camera view of the walkway directly ahead:
-1. OBSTACLE SCAN: Closely inspect the floor, ground, and knee-level path for ANY obstacles — even small ones:
-   - Small hazards: shoes, cables, toys, mats, puddles, small drops, raised thresholds, uneven pavement.
-   - Larger obstacles: chairs, trash cans, open doors, pillars, bikes, bushes, people.
-2. TACTICAL DEVIATION & STEP INSTRUCTION:
-   - If an obstacle is in the path: Give the user an EXACT step-based detour instruction. For example:
-     - "Walk 3 steps forward, take a 1-step deviation to your right to bypass a low box, then continue straight."
-     - "Careful: small raised threshold 2 steps ahead. Step high, then walk straight for 5 steps."
-   - If path is clear: Tell them how many steps to walk straight ahead towards $destination.
-3. CONSTRAINTS:
-   - Maximum 2 sentences.
-   - Crisp, actionable, and direct.
-   - Use hedge words ("looks like", "seems to be", "I think"). Never say anything is "completely safe".
+You are a live pedestrian guide for a blind person walking towards $destination.
+Look at the camera view of the path immediately ahead:
+1. If there is any obstacle, step, threshold, wire, box, chair, or person: give a 1-step detour (e.g. "Step slightly left around the chair, then walk 4 steps.").
+2. If the path is clear: tell them how many steps to walk forward (e.g. "Path clear. Walk straight for 5 steps towards $destination.").
+Limit response to 1 short sentence, under 16 words.
 ''';
 
-      final model = _getModel();
+      final model = GenerativeModel(
+        model: AppConfig.geminiModel,
+        apiKey: AppConfig.geminiApiKey,
+        generationConfig: GenerationConfig(maxOutputTokens: 60),
+      );
       final response = await model.generateContent([
         Content.multi([
           DataPart('image/jpeg', imageBytes),
@@ -199,7 +183,7 @@ Analyze the user's camera view of the walkway directly ahead:
           "Path looks clear for 4 steps ahead towards $destination.";
     } catch (e) {
       print('SIGHT_MATE [OBSTACLE NAV ERROR]: $e');
-      return "Continue carefully towards $destination for 3 steps. Watch your footing.";
+      return "Path looks clear for 4 steps towards $destination. Continue straight.";
     }
   }
 
@@ -226,8 +210,93 @@ No extra words or punctuation.
     }
   }
 
+  /// Milestone 5: Rapid safety hazard scan for stairs down, drop-offs, and head-height overhangs
+  Future<String?> scanForImmediateHazards(Uint8List imageBytes) async {
+    if (AppConfig.isMockMode) {
+      await Future.delayed(const Duration(milliseconds: 500));
+      return null;
+    }
+
+    try {
+      final prompt = '''
+You are a rapid safety hazard guardian for a blind person walking forward.
+Examine this camera image ONLY for immediate dangerous physical hazards:
+1. Drop-offs, stairs going down, steps, curbs, open holes.
+2. Low-hanging obstacles at head or chest level (tree branches, low pipes, signs).
+3. Tripping hazards, wet floors, cords, or moving vehicles.
+
+OUTPUT RULES:
+- If a hazard is present: State the hazard and steps/distance in under 8 words (e.g. "Caution: 3 steps going down ahead.", "Warning: low branch at head level.", "Caution: wet floor ahead.").
+- If the path is clear: Output exactly "CLEAR".
+- No other words.
+''';
+
+      final model = _getModel();
+      final response = await model.generateContent([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ])
+      ]);
+
+      final text = response.text?.trim();
+      if (text == null || text.toUpperCase().contains('CLEAR')) {
+        return null;
+      }
+      return text;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Clear conversation memory (e.g. on new topic).
   void resetMemory() => _history.clear();
+
+  int _mockMovieIdx = 0;
+  static final List<String> _mockMovieDescriptions = [
+    "She discreetly slips a silver key into her coat pocket.",
+    "He glances nervously toward the dark hallway behind him.",
+    "The camera pans up to reveal a storm approaching the city.",
+    "She draws a concealed envelope from beneath the desk.",
+    "He slowly pushes the heavy wooden door open.",
+    "They exchange a tense glance as the elevator doors close.",
+  ];
+
+  /// Milestone 4: 15-word audio describer prompt for Movie Mode
+  Future<String> describeMovieScene(Uint8List imageBytes) async {
+    if (AppConfig.isMockMode) {
+      await Future.delayed(const Duration(milliseconds: 700));
+      final desc =
+          _mockMovieDescriptions[_mockMovieIdx % _mockMovieDescriptions.length];
+      _mockMovieIdx++;
+      return desc;
+    }
+
+    try {
+      final prompt = '''
+You are a real-time audio describer for a movie scene viewed by a blind person.
+In 15 words or fewer, describe only the immediate visual action or key visual detail on screen (e.g. character movement, facial expression, object revealed, setting shift).
+RULES:
+1. Maximum 15 words.
+2. Sighted-guide audio describer style: present tense, crisp, neutral.
+3. Do NOT repeat dialogue or transcribe speech.
+4. If the scene is dark, blank, or credits, return: "Scene transitions."
+''';
+
+      final model = _getModel();
+      final response = await model.generateContent([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ])
+      ]);
+
+      return response.text?.trim() ?? "A character moves across the room.";
+    } catch (e) {
+      print('SIGHT_MATE [MOVIE DESC ERROR]: $e');
+      return "The scene shifts to a new view.";
+    }
+  }
 
   // ── Mock responses ──────────────────────────────────────────────────────────
   String _mockResponse(String question, VerbosityLevel v) {

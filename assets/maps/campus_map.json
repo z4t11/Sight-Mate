@@ -1,8 +1,8 @@
 {
   "meta": {
-    "name": "Sample Campus - Ground Floor",
-    "version": 1,
-    "note": "Replace with your real campus data. All step counts are approximate."
+    "name": "Software Section & Campus - Ground Floor",
+    "version": 2,
+    "note": "Configured with Software Section building routes (Staff Room to Software Lab, Class 1 to Class 2)."
   },
   "nodes": [
     {
@@ -73,9 +73,41 @@
       "id": "staff_room",
       "name": "Staff Room",
       "floor": 0,
-      "expected_signs": ["staff room", "staff", "faculty"],
+      "expected_signs": ["staff room", "staff", "faculty", "software staff"],
       "hazards": [],
-      "description": "Staff room along Corridor B."
+      "description": "Software Section Staff Room along Corridor B."
+    },
+    {
+      "id": "corridor_junction",
+      "name": "Corridor Junction",
+      "floor": 0,
+      "expected_signs": ["junction", "corner", "turn", "crossway"],
+      "hazards": [],
+      "description": "90-degree corridor junction connecting Staff Room hallway to the Software Lab hallway."
+    },
+    {
+      "id": "software_lab",
+      "name": "Software Lab",
+      "floor": 0,
+      "expected_signs": ["software lab", "computer lab", "lab", "cs lab", "software section"],
+      "hazards": [],
+      "description": "Software Section Computer Lab at the end of the corridor, around the corner from the staff room."
+    },
+    {
+      "id": "classroom_1",
+      "name": "Classroom 1",
+      "floor": 0,
+      "expected_signs": ["classroom 1", "class 1", "room 1", "class one"],
+      "hazards": [],
+      "description": "Classroom 1 in the Software Section."
+    },
+    {
+      "id": "classroom_2",
+      "name": "Classroom 2",
+      "floor": 0,
+      "expected_signs": ["classroom 2", "class 2", "room 2", "class two"],
+      "hazards": [],
+      "description": "Classroom 2 in the Software Section, around the corridor junction from Classroom 1."
     },
     {
       "id": "washroom",
@@ -126,6 +158,18 @@
 
     {"from": "corridor_b",  "to": "hod_office",  "steps": 20,  "heading": 90},
     {"from": "hod_office",  "to": "corridor_b",  "steps": 20,  "heading": 270},
+
+    {"from": "staff_room",         "to": "corridor_junction", "steps": 14,  "heading": 90},
+    {"from": "corridor_junction",  "to": "staff_room",         "steps": 14,  "heading": 270},
+
+    {"from": "corridor_junction",  "to": "software_lab",       "steps": 18,  "heading": 0},
+    {"from": "software_lab",       "to": "corridor_junction",  "steps": 18,  "heading": 180},
+
+    {"from": "corridor_junction",  "to": "classroom_1",        "steps": 8,   "heading": 270},
+    {"from": "classroom_1",        "to": "corridor_junction",  "steps": 8,   "heading": 90},
+
+    {"from": "corridor_junction",  "to": "classroom_2",        "steps": 16,  "heading": 0},
+    {"from": "classroom_2",        "to": "corridor_junction",  "steps": 16,  "heading": 180},
 
     {"from": "lobby",       "to": "washroom",    "steps": 6,   "heading": 270},
     {"from": "washroom",    "to": "lobby",       "steps": 6,   "heading": 90},

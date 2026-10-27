@@ -9,8 +9,7 @@ class AppConfig {
   static String get geminiApiKey =>
       dotenv.env['GEMINI_API_KEY'] ?? '';
 
-  /// Default to 'gemini-3.5-flash-lite' for 2x higher rate limits (30 RPM vs 15 RPM)
-  /// and 3x faster response latency on Google AI free tier.
+  /// Default to 'gemini-3.5-flash-lite' for ultra-fast multimodal response latency.
   static String get geminiModel =>
       dotenv.env['GEMINI_MODEL']?.isNotEmpty == true
           ? dotenv.env['GEMINI_MODEL']!

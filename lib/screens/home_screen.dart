@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/app_intent.dart';
@@ -15,6 +17,11 @@ import '../services/map_loader.dart';
 import '../services/positioning_service.dart';
 import '../services/navigation_service.dart';
 import '../services/gps_service.dart';
+import '../services/hardware_button_service.dart';
+import 'bridge_mode_screen.dart';
+import 'movie_mode_screen.dart';
+import 'test_log_screen.dart';
+import 'route_recorder_screen.dart';
 
 enum _ListenState { idle, listening, processing }
 
@@ -35,35 +42,65 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _gemini   = GeminiService();
   final _map      = MapLoader();
   final _gps      = GpsService();
+  final _hwButtons = HardwareButtonService();
 
   late PositioningService _positioning;
   late NavigationService  _nav;
 
+  StreamSubscription<int>? _stepSub;
   _ListenState _state      = _ListenState.idle;
-  String       _statusMsg  = 'Tap anywhere to ask a question';
+  String       _statusMsg  = 'Double-click Vol Up or tap to ask';
   String       _transcript = '';
   int          _mockIdx    = 0;
+
+  // Milestone 5: Safety Guardian state
+  bool _isSafetyGuardianActive = false;
+  Timer? _safetyScanTimer;
+  bool _isScanningHazard = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _hwButtons.addListener(_onHardwareButton);
     _positioning = PositioningService(_map, _gps);
     _nav = NavigationService(map: _map, positioning: _positioning, gps: _gps);
+    _stepSub = _positioning.onStepStream.listen(_onPedometerStep);
     _init();
+  }
+
+  /// Live step listener: automatically guides the user through each turn as steps are taken.
+  void _onPedometerStep(int delta) async {
+    if (!_positioning.state.isNavigating) return;
+
+    final update = _nav.onStep(delta);
+    if (update == null) return;
+
+    if (mounted) {
+      setState(() {
+        _statusMsg = update.message;
+      });
+    }
+
+    if (update.shouldSpeak) {
+      await HapticService.confirm();
+      await _tts.speak(update.message);
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.inactive || state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.paused) {
       if (mounted) setState(() {});
       _camera.dispose().then((_) {
         if (mounted) setState(() {});
       });
     } else if (state == AppLifecycleState.resumed) {
-      _camera.init().then((_) {
-        if (mounted) setState(() {});
-      });
+      if (!_camera.isReady) {
+        _camera.init().then((_) {
+          if (mounted) setState(() {});
+        });
+      }
     }
   }
 
@@ -96,11 +133,62 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // ── Voice loop ──────────────────────────────────────────────────────────
 
+  Future<void> _startListening() async {
+    // 1. Cut any ongoing speech immediately before recording
+    await _tts.stop();
+
+    await HapticService.confirm();
+    _setListenState(_ListenState.listening, 'Listening…');
+
+    if (!_stt.isAvailable) {
+      final ok = await _stt.init();
+      if (!ok) {
+        if (AppConfig.isMockMode) {
+          final mockCmds = [
+            'where am I',
+            'take me to HOD office',
+            'what is in front of me',
+            'take me to canteen',
+          ];
+          final cmd = mockCmds[_mockIdx % mockCmds.length];
+          _mockIdx++;
+          await _handleTranscript(cmd);
+          return;
+        } else {
+          await HapticService.error();
+          await _tts.speak(
+              "Speech recognizer not ready. Double-click Volume Up to try again.");
+          _setListenState(
+              _ListenState.idle, 'Mic not ready. Double-click Vol Up to retry.');
+          return;
+        }
+      }
+    }
+
+    await _stt.listen(
+      onResult: _handleTranscript,
+      onDone: () {
+        if (_state == _ListenState.listening) {
+          _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+        }
+      },
+    );
+  }
+
   Future<void> _onTap() async {
-    if (_state != _ListenState.idle) {
-      await _tts.stop();
+    // If currently listening: tapping cancels/stops
+    if (_state == _ListenState.listening) {
       await _stt.cancel();
-      _setListenState(_ListenState.idle, 'Stopped. Tap to ask again.');
+      await HapticService.confirm();
+      _setListenState(_ListenState.idle, 'Stopped. Double-click Vol Up or tap to ask.');
+      return;
+    }
+
+    // If currently processing or TTS is speaking: tapping cuts speech immediately
+    if (_state == _ListenState.processing || _tts.isSpeaking) {
+      await _tts.stop();
+      await HapticService.confirm();
+      _setListenState(_ListenState.idle, 'Stopped. Double-click Vol Up or tap to ask.');
       return;
     }
 
@@ -110,38 +198,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       return;
     }
 
-    await HapticService.confirm();
-    _setListenState(_ListenState.listening, 'Listening…');
-
-    if (!_stt.isAvailable) {
-      // STT truly unavailable — cycle mock commands for demo
-      await Future.delayed(const Duration(seconds: 1));
-      final mockCmds = [
-        'where am I',
-        'take me to HOD office',
-        'what is in front of me',
-        'take me to canteen',
-      ];
-      final cmd = mockCmds[_mockIdx % mockCmds.length];
-      _mockIdx++;
-      await _handleTranscript(cmd);
-      return;
-    }
-
-    await _stt.listen(
-      onResult: _handleTranscript,
-      onDone: () {
-        if (_state == _ListenState.listening) {
-          _setListenState(_ListenState.idle, 'Tap anywhere to ask a question');
-        }
-      },
-    );
+    await _startListening();
   }
 
   Future<void> _handleTranscript(String text) async {
     if (text.isEmpty) {
       _setListenState(
-          _ListenState.idle, "I didn't catch that. Tap to try again.");
+          _ListenState.idle, "I didn't hear anything. Double-click Vol Up or tap to ask.");
+      await HapticService.error();
+      await _tts.speak("I didn't hear anything. Double-click Volume Up or tap to speak.");
       return;
     }
     setState(() => _transcript = text);
@@ -229,43 +294,73 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final rawDest = intent.slot?.trim();
         final dest = (rawDest != null && rawDest.isNotEmpty)
             ? rawDest
-            : 'that destination';
+            : 'forward';
 
-        // Check if destination is on the campus graph
-        final isCampusDest = _map.findByName(dest) != null;
+        // Check if destination is on the campus graph or query specifies "from X to Y"
+        final isCampusDest = _map.findByName(dest) != null || dest.contains(' to ');
 
         if (isCampusDest) {
-          _setListenState(_ListenState.processing, 'Planning campus route to $dest…');
+          _setListenState(_ListenState.processing, 'Routing to $dest…');
 
-          // Ensure we know starting node
+          // If starting node unknown, default intelligently based on query (e.g. staff room for lab/class, or entrance)
           if (_positioning.state.currentNodeId == null) {
-            await _positioning.tryOcrMatch(_camera.controller);
+            final qLower = dest.toLowerCase();
+            final defaultStart = (qLower.contains('lab') || qLower.contains('class') || qLower.contains('software'))
+                ? (_map.findByName('staff room')?.id ?? 'staff_room')
+                : (_map.nodes.isNotEmpty ? _map.nodes.keys.first : 'entrance');
+            _positioning.confirmLocation(defaultStart);
           }
 
-          if (_positioning.state.currentNodeId != null) {
-            final routeMsg = _nav.handleNavigateCommand(dest);
-            await _tts.speak(routeMsg);
-            // Scan path with camera for immediate ground obstacles & step guidance
-            await _provideNextObstacleAwareStep(dest);
-          } else {
-            await _tts.speak(
-              "I found $dest on the campus map, but where are you starting from? "
-              "Say 'I am at' followed by your location, or point at a sign.",
-            );
-          }
+          final routeMsg = _nav.handleNavigateCommand(dest);
+          await _tts.speak(routeMsg);
+          _setListenState(
+            _ListenState.idle,
+            'Navigating to $dest. Walk forward; app will guide every turn.',
+          );
         } else {
           // Visual Micro-Navigation with Obstacle Avoidance & Step Deviations
-          _positioning.setCustomLocation("Origin spot");
+          _positioning.setCustomLocation("Current spot");
           _positioning.updateState(_positioning.state.copyWith(
             isNavigating: true,
             activeDestination: dest,
           ));
           await _provideNextObstacleAwareStep(dest);
         }
+        return;
+
+      // ── Route Recorder Mode ("Scan & Save") ──────────────────────────────
+      case AppIntentType.recordRoute:
+        await _openRouteRecorder();
+        return;
+
+      // ── Sign Language Bridge Mode ────────────────────────────────────────
+      case AppIntentType.signBridgeMode:
+        await _openBridgeMode();
+        return;
 
       // ── Movie Mode ──────────────────────────────────────────────────────
       case AppIntentType.movieMode:
-        await _tts.speak('Movie mode coming in milestone 4.');
+        await _openMovieMode();
+        return;
+
+      // ── Safety Guardian Mode (Milestone 5) ──────────────────────────────
+      case AppIntentType.safetyGuardian:
+        if (intent.slot == 'stop') {
+          await _toggleSafetyGuardian(false);
+        } else {
+          await _toggleSafetyGuardian(true);
+        }
+        return;
+
+      // ── Emergency SOS (Milestone 5) ─────────────────────────────────────
+      case AppIntentType.emergencySos:
+        await _triggerEmergencySos();
+        return;
+
+      // ── System Diagnostics (Milestone 5) ────────────────────────────────
+      case AppIntentType.runDiagnostics:
+        await _openDiagnostics();
+        return;
 
       // ── Unknown ─────────────────────────────────────────────────────────
       case AppIntentType.unknown:
@@ -279,6 +374,178 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
+
+  Future<void> _openRouteRecorder() async {
+    await _tts.stop();
+    await _stt.stop();
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RouteRecorderScreen(
+          mapLoader: _map,
+          positioning: _positioning,
+          tts: _tts,
+          stt: _stt,
+        ),
+      ),
+    );
+
+    if (mounted) setState(() {});
+    await _tts.speak('Route recorder closed. Back to home.');
+    _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+  }
+
+  Future<void> _openBridgeMode() async {
+    await _tts.stop();
+    await _stt.stop();
+    await _camera.dispose();
+    if (mounted) setState(() {});
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => BridgeModeScreen(
+          tts: _tts,
+          stt: _stt,
+        ),
+      ),
+    );
+
+    // Re-initialize camera when returning to Home
+    await _camera.init();
+    if (mounted) setState(() {});
+    await _tts.speak('Switched back to normal mode.');
+    _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+  }
+
+  // ── Milestone 5: Safety Guardian Mode ──────────────────────────────────
+
+  Future<void> _toggleSafetyGuardian(bool enable) async {
+    if (enable == _isSafetyGuardianActive) return;
+
+    if (enable) {
+      setState(() => _isSafetyGuardianActive = true);
+      await HapticService.confirm();
+      await _tts.speak(
+        "Safety Guardian active. Scanning continuously for drop-offs, stairs, and head-height hazards. Double-click Volume Down to exit.",
+      );
+      _safetyScanTimer =
+          Timer.periodic(const Duration(seconds: 3), (_) => _runSafetyScan());
+    } else {
+      _safetyScanTimer?.cancel();
+      _safetyScanTimer = null;
+      setState(() => _isSafetyGuardianActive = false);
+      await HapticService.confirm();
+      await _tts.speak("Safety Guardian stopped.");
+    }
+    _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+  }
+
+  Future<void> _runSafetyScan() async {
+    if (!_isSafetyGuardianActive || _isScanningHazard || !mounted) return;
+    if (_state != _ListenState.idle) return;
+
+    _isScanningHazard = true;
+    try {
+      final frame = await _camera.captureFrame();
+      if (frame != null) {
+        final hazard = await _gemini.scanForImmediateHazards(frame);
+        if (hazard != null && mounted && _isSafetyGuardianActive) {
+          await HapticService.hazardWarning();
+          _setListenState(_ListenState.processing, 'HAZARD: $hazard');
+          await _tts.speak(hazard);
+          _setListenState(
+              _ListenState.idle, 'Double-click Vol Up or tap to ask');
+        }
+      }
+    } catch (_) {
+    } finally {
+      _isScanningHazard = false;
+    }
+  }
+
+  // ── Milestone 5: Emergency SOS ──────────────────────────────────────────
+
+  Future<void> _triggerEmergencySos() async {
+    await _tts.stop();
+    await _stt.stop();
+    await HapticService.emergencyAlert();
+
+    _setListenState(_ListenState.processing, 'EMERGENCY SOS TRIGGERED');
+
+    final pos = _gps.currentPosition;
+    String locationText = '';
+
+    if (pos != null) {
+      final lat = pos.latitude.toStringAsFixed(5);
+      final lng = pos.longitude.toStringAsFixed(5);
+      locationText = "GPS coordinates: $lat by $lng";
+      final mapUrl = "https://maps.google.com/?q=$lat,$lng";
+      await Clipboard.setData(ClipboardData(
+          text: "EMERGENCY: I need help. My current location is: $mapUrl"));
+    } else {
+      locationText = _positioning.describeLocation();
+    }
+
+    final frame = await _camera.captureFrame();
+    String sceneContext = '';
+    if (frame != null) {
+      final scene = await _gemini.recognizeLocationFromScene(frame);
+      if (scene != null) {
+        sceneContext = " Near $scene.";
+      }
+    }
+
+    final speechMsg =
+        "Emergency alert activated. $locationText.$sceneContext Emergency map link copied to clipboard.";
+    await _tts.speak(speechMsg);
+    _setListenState(
+        _ListenState.idle, 'SOS active. Double-click Vol Down to stop.');
+  }
+
+  // ── Milestone 5: System Diagnostics ────────────────────────────────────
+
+  Future<void> _openDiagnostics() async {
+    await _tts.stop();
+    await _stt.stop();
+    await _camera.dispose();
+    if (mounted) setState(() {});
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => TestLogScreen(
+          tts: _tts,
+          stt: _stt,
+        ),
+      ),
+    );
+
+    // Re-initialize camera when returning to Home
+    await _camera.init();
+    if (mounted) setState(() {});
+    _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+  }
+
+  Future<void> _openMovieMode() async {
+    await _tts.stop();
+    await _stt.stop();
+    await _camera.dispose();
+    if (mounted) setState(() {});
+
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MovieModeScreen(
+          tts: _tts,
+          stt: _stt,
+        ),
+      ),
+    );
+
+    // Re-initialize camera when returning to Home
+    await _camera.init();
+    if (mounted) setState(() {});
+    await _tts.speak('Switched back to normal mode.');
+    _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+  }
 
   void _setListenState(_ListenState state, String msg) {
     if (!mounted) return;
@@ -379,6 +646,79 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                 ),
               ),
+
+              // Safety Guardian Active Banner (Milestone 5)
+              if (_isSafetyGuardianActive)
+                Positioned(
+                  top: 50,
+                  left: 20,
+                  right: 20,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0A3D22),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: Colors.greenAccent, width: 2),
+                    ),
+                    child: const Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.shield_rounded,
+                            color: Colors.greenAccent, size: 20),
+                        SizedBox(width: 8),
+                        Text(
+                          'SAFETY GUARDIAN ACTIVE • SCANNING',
+                          style: TextStyle(
+                            color: Colors.greenAccent,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 1.1,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                )
+              else
+                // Route Recorder (Scan & Save) Quick Access Pill
+                Positioned(
+                  top: 48,
+                  right: 20,
+                  child: Semantics(
+                    button: true,
+                    label: 'Map Route. Scan and record a building corridor path.',
+                    child: GestureDetector(
+                      onTap: _openRouteRecorder,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.cyanAccent.withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.cyanAccent, width: 1.5),
+                        ),
+                        child: const Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.add_road_rounded,
+                                color: Colors.cyanAccent, size: 16),
+                            SizedBox(width: 6),
+                            Text(
+                              'MAP ROUTE',
+                              style: TextStyle(
+                                color: Colors.cyanAccent,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.1,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
 
               // Foreground content
               Padding(
@@ -483,6 +823,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 8),
+                    Semantics(
+                      excludeSemantics: true,
+                      child: Text(
+                        'Vol Up (2x): Speak  •  Vol Down (2x): Stop  •  1x: Vol',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.35),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -516,9 +868,40 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
+  bool _onHardwareButton(HardwareButton button) {
+    if (!mounted) return false;
+
+    if (button == HardwareButton.volumeUp) {
+      // Physical Volume Up Double-Click: Voice Input in ANY state!
+      if (_state == _ListenState.listening) {
+        _stt.cancel().then((_) => _startListening());
+      } else {
+        _startListening();
+      }
+      return true;
+    } else if (button == HardwareButton.volumeDown) {
+      // Physical Volume Down Double-Click: Instant STOP (Speech, STT, Navigation, or Safety Guardian)
+      _tts.stop();
+      _stt.cancel();
+      if (_isSafetyGuardianActive) {
+        _toggleSafetyGuardian(false);
+      }
+      if (_positioning.state.isNavigating) {
+        _nav.cancelNavigation();
+      }
+      HapticService.confirm();
+      _setListenState(_ListenState.idle, 'Stopped. Double-click Vol Up or tap to ask.');
+      return true;
+    }
+    return false;
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _stepSub?.cancel();
+    _safetyScanTimer?.cancel();
+    _hwButtons.removeListener(_onHardwareButton);
     _stt.stop();
     _tts.stop();
     _gps.dispose();
