@@ -22,7 +22,6 @@ import '../services/hardware_button_service.dart';
 import '../services/audio_priority_manager.dart';
 import '../services/local_perception_service.dart';
 import '../services/live_vision_session.dart';
-import '../services/clew_route_follower.dart';
 import '../services/outdoor_routing_service.dart';
 import '../services/outdoor_safety_guardian.dart';
 import '../services/ocr_service.dart';
@@ -61,7 +60,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   late final AudioPriorityManager _audioPriority;
   late final LiveVisionSession _liveVision;
-  late final ClewRouteFollower _clewFollower;
   late final OutdoorRoutingService _outdoorRouter;
   late final OutdoorSafetyGuardian _outdoorGuardian;
   late final UnifiedNavigationCoordinator _coordinator;
@@ -96,12 +94,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       gemini: _gemini,
       audio: _audioPriority,
     );
-    _clewFollower = ClewRouteFollower(
-      camera: _camera,
-      gemini: _gemini,
-      audio: _audioPriority,
-      localPerception: _localPerception,
-    );
     _outdoorRouter = OutdoorRoutingService(_gps);
     _outdoorGuardian = OutdoorSafetyGuardian(
       camera: _camera,
@@ -119,7 +111,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _coordinator = UnifiedNavigationCoordinator(
       gps: _gps,
       audio: _audioPriority,
-      clewFollower: _clewFollower,
       outdoorRouter: _outdoorRouter,
       outdoorGuardian: _outdoorGuardian,
       liveVision: _liveVision,
@@ -150,7 +141,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   /// Live step listener: automatically guides the user through each turn as steps are taken.
   void _onPedometerStep(int delta) async {
-    // 0. If Unified Coordinator is actively navigating (Clew indoor route or guiding to exit)
+    // 0. If Unified Coordinator is actively navigating (indoor route or guiding to exit)
     if (_coordinator.isNavigating) {
       _coordinator.onStep(delta);
       return;
@@ -323,7 +314,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_coordinator.isWaitingForClarification) {
       _setListenState(_ListenState.processing, 'Got it: "$text"');
       final res = await _coordinator.handleClarification(text);
-      _setListenState(_ListenState.idle, res);
+      _setListenState(_ListenState.idle, res ?? 'Clarification received');
       return;
     }
 
@@ -643,8 +634,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           positioning: _positioning,
           tts: _tts,
           stt: _stt,
-          camera: _camera,
-          gemini: _gemini,
         ),
       ),
     );
@@ -1258,7 +1247,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _safetyScanTimer?.cancel();
     _hwButtons.removeListener(_onHardwareButton);
     _coordinator.stopAllNavigation();
-    _clewFollower.dispose();
     _objectSearch.removeListener(_onObjectSearchChanged);
     _objectSearch.dispose();
     _audioPriority.stopAll();

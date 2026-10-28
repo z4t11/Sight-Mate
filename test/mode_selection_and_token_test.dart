@@ -1,7 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sight_mate/models/app_intent.dart';
-import 'package:sight_mate/models/clew_route_models.dart';
 import 'package:sight_mate/services/intent_router.dart';
 import 'package:sight_mate/services/gemini_service.dart';
 import 'package:sight_mate/services/unified_navigation_coordinator.dart';
@@ -9,7 +8,6 @@ import 'package:sight_mate/services/map_loader.dart';
 import 'package:sight_mate/services/gps_service.dart';
 import 'package:sight_mate/services/audio_priority_manager.dart';
 import 'package:sight_mate/services/tts_service.dart';
-import 'package:sight_mate/services/clew_route_follower.dart';
 import 'package:sight_mate/services/outdoor_routing_service.dart';
 import 'package:sight_mate/services/outdoor_safety_guardian.dart';
 import 'package:sight_mate/services/live_vision_session.dart';
@@ -33,112 +31,53 @@ void main() {
     final router = IntentRouter();
 
     test('1. "Take me to the door" routes to navigate with slot "door"', () {
-      final intent = router.route('Take me to the door');
-      expect(intent.type, equals(AppIntentType.navigate));
-      expect(intent.slot, equals('door'));
+      final res = router.route('Take me to the door');
+      expect(res.type, equals(AppIntentType.navigate));
+      expect(res.slot, equals('door'));
     });
 
     test('2. "Find the bathroom" routes to findObject with slot "bathroom"', () {
-      final intent = router.route('Find the bathroom');
-      expect(intent.type, equals(AppIntentType.findObject));
-      expect(intent.slot, equals('bathroom'));
+      final res = router.route('Find the bathroom');
+      expect(res.type, equals(AppIntentType.findObject));
+      expect(res.slot, equals('bathroom'));
     });
 
     test('3. "Guide me to the classroom" routes to navigate with slot "classroom"', () {
-      final intent = router.route('Guide me to the classroom');
-      expect(intent.type, equals(AppIntentType.navigate));
-      expect(intent.slot, equals('classroom'));
+      final res = router.route('Guide me to the classroom');
+      expect(res.type, equals(AppIntentType.navigate));
+      expect(res.slot, equals('classroom'));
     });
 
-    test('4. "Take me to the bus stop" routes to navigate with slot "bus stop"', () {
-      final intent = router.route('Take me to the bus stop');
-      expect(intent.type, equals(AppIntentType.navigate));
-      expect(intent.slot, equals('bus stop'));
+    test('4. "Navigate to the bus stop" routes to navigate with slot "bus stop"', () {
+      final res = router.route('Navigate to the bus stop');
+      expect(res.type, equals(AppIntentType.navigate));
+      expect(res.slot, equals('bus stop'));
     });
 
-    test('5. Building entry and exit voice confirmations', () {
-      final exit1 = router.route('I am outside');
+    test('5. "Where is the chair" routes to findObject with slot "chair"', () {
+      final res = router.route('Where is the chair');
+      expect(res.type, equals(AppIntentType.findObject));
+      expect(res.slot, equals('chair'));
+    });
+
+    test('6. Filler words stripped: "Can you find a water bottle for me?" -> "water bottle"', () {
+      final res = router.route('Can you find a water bottle for me?');
+      expect(res.type, equals(AppIntentType.findObject));
+      expect(res.slot, equals('water bottle'));
+    });
+
+    test('7. Transition confirmation intents recognized', () {
+      final exit1 = router.route("I'm outside");
       expect(exit1.type, equals(AppIntentType.confirmExit));
 
-      final exit2 = router.route("I've exited");
+      final exit2 = router.route("I have exited");
       expect(exit2.type, equals(AppIntentType.confirmExit));
 
       final entry1 = router.route('I am inside');
       expect(entry1.type, equals(AppIntentType.confirmEntry));
 
-      final entry2 = router.route('Entered the building');
+      final entry2 = router.route('I entered the building');
       expect(entry2.type, equals(AppIntentType.confirmEntry));
-    });
-  });
-
-  group('Clew Route Models & Bidirectional Inversion Tests', () {
-    test('ClewRoute createReturnRoute inverts crumbs and keypoints correctly', () {
-      final now = DateTime.now();
-      final crumbs = [
-        ClewCrumb(x: 0.0, y: 0.0, heading: 90.0, stepCount: 0, timestamp: now),
-        ClewCrumb(x: 7.0, y: 0.0, heading: 90.0, stepCount: 10, timestamp: now),
-        ClewCrumb(x: 7.0, y: 7.0, heading: 0.0, stepCount: 20, timestamp: now),
-      ];
-
-      final keypoints = [
-        const ClewKeypoint(
-          index: 0,
-          x: 0.0,
-          y: 0.0,
-          heading: 90.0,
-          turnAngle: 0.0,
-          cumulativeSteps: 0,
-          cumulativeMeters: 0.0,
-          instruction: 'Start at Room A.',
-        ),
-        const ClewKeypoint(
-          index: 1,
-          x: 7.0,
-          y: 0.0,
-          heading: 0.0,
-          turnAngle: -90.0, // Left turn
-          cumulativeSteps: 10,
-          cumulativeMeters: 7.0,
-          instruction: 'Turn left.',
-        ),
-        const ClewKeypoint(
-          index: 2,
-          x: 7.0,
-          y: 7.0,
-          heading: 0.0,
-          turnAngle: 0.0,
-          cumulativeSteps: 20,
-          cumulativeMeters: 14.0,
-          instruction: 'Arrived at Room B.',
-        ),
-      ];
-
-      final forwardRoute = ClewRoute(
-        id: 'test_route_ab',
-        name: 'Room A to Room B',
-        startName: 'Room A',
-        destinationName: 'Room B',
-        createdAt: now,
-        crumbs: crumbs,
-        keypoints: keypoints,
-        totalSteps: 20,
-        totalDistanceMeters: 14.0,
-      );
-
-      final returnRoute = forwardRoute.createReturnRoute();
-
-      // Return route should swap endpoints
-      expect(returnRoute.startName, equals('Room B'));
-      expect(returnRoute.destinationName, equals('Room A'));
-      expect(returnRoute.totalSteps, equals(20));
-
-      // Keypoints in return route should have reversed order
-      expect(returnRoute.keypoints.length, equals(3));
-      expect(returnRoute.keypoints.first.instruction, contains('Start from Room B'));
-      expect(returnRoute.keypoints.last.instruction, contains('Arrived at Room A'));
-
-      // Headings should be flipped by 180 degrees
-      expect(returnRoute.crumbs.first.heading, equals(180.0)); // (0 + 180) % 360
     });
   });
 
@@ -156,12 +95,6 @@ void main() {
       final gemini = GeminiService();
       final local = LocalPerceptionService();
 
-      final clewFollower = ClewRouteFollower(
-        camera: cam,
-        gemini: gemini,
-        audio: audio,
-        localPerception: local,
-      );
       final outdoorRouter = OutdoorRoutingService(gps);
       final outdoorGuardian = OutdoorSafetyGuardian(
         camera: cam,
@@ -185,7 +118,6 @@ void main() {
       coordinator = UnifiedNavigationCoordinator(
         gps: gps,
         audio: audio,
-        clewFollower: clewFollower,
         outdoorRouter: outdoorRouter,
         outdoorGuardian: outdoorGuardian,
         liveVision: liveVision,

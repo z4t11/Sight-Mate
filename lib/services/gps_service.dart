@@ -7,18 +7,30 @@ import 'app_config.dart';
 class GpsService extends ChangeNotifier {
   Position? _currentPosition;
   StreamSubscription<Position>? _positionSub;
+  final _positionController = StreamController<Position>.broadcast();
   bool _hasPermission = false;
   bool _isServiceEnabled = false;
 
   Position? get currentPosition => _currentPosition;
+  Stream<Position> get onPositionChanged => _positionController.stream;
   bool get hasPermission => _hasPermission;
   bool get isServiceEnabled => _isServiceEnabled;
   bool get isGpsAvailable => _currentPosition != null;
 
+  void _setCurrentPosition(Position pos) {
+    _currentPosition = pos;
+    if (!_positionController.isClosed) {
+      _positionController.add(pos);
+    }
+    notifyListeners();
+  }
+
   /// Initialise and request GPS permissions.
   Future<bool> init() async {
     if (AppConfig.isMockMode) {
-      _currentPosition = Position(
+      _hasPermission = true;
+      _isServiceEnabled = true;
+      _setCurrentPosition(Position(
         latitude: 12.9716,
         longitude: 77.5946,
         timestamp: DateTime.now(),
@@ -29,10 +41,7 @@ class GpsService extends ChangeNotifier {
         headingAccuracy: 5.0,
         speed: 0.0,
         speedAccuracy: 0.0,
-      );
-      _hasPermission = true;
-      _isServiceEnabled = true;
-      notifyListeners();
+      ));
       return true;
     }
 
@@ -66,9 +75,8 @@ class GpsService extends ChangeNotifier {
       try {
         final cached = await Geolocator.getLastKnownPosition();
         if (cached != null) {
-          _currentPosition = cached;
+          _setCurrentPosition(cached);
           debugPrint('[GPS] Last known position loaded: ${cached.latitude}, ${cached.longitude} (acc: ${cached.accuracy}m)');
-          notifyListeners();
         }
       } catch (e) {
         debugPrint('[GPS] getLastKnownPosition error: $e');
@@ -81,9 +89,8 @@ class GpsService extends ChangeNotifier {
           timeLimit: Duration(seconds: 10),
         ),
       ).then((pos) {
-        _currentPosition = pos;
+        _setCurrentPosition(pos);
         debugPrint('[GPS] Fresh position locked: ${pos.latitude}, ${pos.longitude}');
-        notifyListeners();
       }).catchError((err) {
         debugPrint('[GPS] Initial getCurrentPosition timed out or failed: $err');
       });
@@ -111,8 +118,7 @@ class GpsService extends ChangeNotifier {
       _positionSub = Geolocator.getPositionStream(
         locationSettings: locationSettings,
       ).listen((pos) {
-        _currentPosition = pos;
-        notifyListeners();
+        _setCurrentPosition(pos);
       }, onError: (err) {
         debugPrint('[GPS] AndroidSettings stream error, falling back: $err');
         _startFallbackStream();
@@ -130,8 +136,7 @@ class GpsService extends ChangeNotifier {
         distanceFilter: 1,
       ),
     ).listen((pos) {
-      _currentPosition = pos;
-      notifyListeners();
+      _setCurrentPosition(pos);
     }, onError: (err) {
       debugPrint('[GPS] Fallback stream error: $err');
     });
@@ -172,6 +177,7 @@ class GpsService extends ChangeNotifier {
   @override
   void dispose() {
     _positionSub?.cancel();
+    _positionController.close();
     super.dispose();
   }
 }

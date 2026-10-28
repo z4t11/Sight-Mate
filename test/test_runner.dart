@@ -1,5 +1,6 @@
+import 'dart:convert';
 import 'package:sight_mate/models/app_intent.dart';
-import 'package:sight_mate/models/clew_route_models.dart';
+import 'package:sight_mate/models/object_search_models.dart';
 import 'package:sight_mate/services/intent_router.dart';
 
 void main() {
@@ -73,66 +74,25 @@ void main() {
   final t12 = router.route('I am inside');
   expect(t12.type, AppIntentType.confirmEntry, 'I am inside maps to confirmEntry');
 
-  // Test 5: Clew Route Serialization & Inverted Return Route
-  print('\n-- Test Group 5: Clew Route Inversion & JSON Serialization --');
-  final forwardRoute = ClewRoute(
-    id: 'test_route_1',
-    name: 'Office to Cafeteria',
-    startName: 'Office',
-    destinationName: 'Cafeteria',
-    createdAt: DateTime.now(),
-    crumbs: [
-      ClewCrumb(x: 0, y: 0, heading: 90, stepCount: 0, timestamp: DateTime.now()),
-      ClewCrumb(x: 10, y: 0, heading: 90, stepCount: 15, timestamp: DateTime.now()),
-      ClewCrumb(x: 10, y: 8, heading: 0, stepCount: 27, timestamp: DateTime.now()),
-    ],
-    keypoints: const [
-      ClewKeypoint(
-        index: 0,
-        x: 0,
-        y: 0,
-        heading: 90,
-        turnAngle: 0,
-        cumulativeSteps: 0,
-        cumulativeMeters: 0,
-        instruction: 'Start from Office. Walk forward 15 steps.',
-      ),
-      ClewKeypoint(
-        index: 1,
-        x: 10,
-        y: 0,
-        heading: 0,
-        turnAngle: 90,
-        cumulativeSteps: 15,
-        cumulativeMeters: 10,
-        instruction: 'Turn left. Walk forward 12 steps.',
-      ),
-      ClewKeypoint(
-        index: 2,
-        x: 10,
-        y: 8,
-        heading: 0,
-        turnAngle: 0,
-        cumulativeSteps: 27,
-        cumulativeMeters: 18,
-        instruction: 'Arrived at Cafeteria.',
-      ),
-    ],
-    totalSteps: 27,
-    totalDistanceMeters: 18.0,
+  // Test 5: Persistent Object Search & Directional Models
+  print('\n-- Test Group 5: Object Search Models & Directions --');
+  expect(ObjectDirection.ahead.label, 'ahead', 'ObjectDirection.ahead label');
+  expect(ObjectDirection.left.label, 'on your left', 'ObjectDirection.left label');
+  expect(ObjectDirection.right.label, 'on your right', 'ObjectDirection.right label');
+
+  const foundResult = ObjectSearchResult(
+    status: TargetDetectionStatus.found,
+    direction: ObjectDirection.ahead,
+    distance: 'about 2 metres',
+    description: 'A wooden chair is directly ahead.',
+    guidance: '',
   );
+  expect(foundResult.isFound, true, 'ObjectSearchResult isFound');
 
-  final json = forwardRoute.toJson();
-  final deserialized = ClewRoute.fromJson(json);
-  expect(deserialized.id, 'test_route_1', 'ClewRoute JSON deserialization ID matches');
-  expect(deserialized.totalSteps, 27, 'ClewRoute JSON steps match');
-
-  final returnRoute = forwardRoute.createReturnRoute();
-  expect(returnRoute.startName, 'Cafeteria', 'Return route startName is Cafeteria');
-  expect(returnRoute.destinationName, 'Office', 'Return route destinationName is Office');
-  expect(returnRoute.totalSteps, 27, 'Return route totalSteps preserved');
-  expect(returnRoute.keypoints.first.instruction.contains('Start from Cafeteria'), true, 'Return keypoint 0 starts from Cafeteria');
-  expect(returnRoute.keypoints.last.instruction.contains('Arrived at Office'), true, 'Return keypoint last arrives at Office');
+  const jsonStr = '{"status":"found","direction":"right","distance":"about 2 metres"}';
+  final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+  expect(map['status'], 'found', 'JSON status parsed');
+  expect(map['direction'], 'right', 'JSON direction parsed');
 
   print('\n================================================');
   print('TEST SUMMARY: $passed passed, $failed failed.');
