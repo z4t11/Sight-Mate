@@ -322,7 +322,7 @@ RULES:
     _searchModel ??= GenerativeModel(
       model: AppConfig.geminiModel,
       apiKey: AppConfig.geminiApiKey,
-      generationConfig: GenerationConfig(maxOutputTokens: 25),
+      generationConfig: GenerationConfig(maxOutputTokens: 250),
     );
     return _searchModel!;
   }
@@ -364,12 +364,84 @@ RULES:
     }
   }
 
+  /// Real-time Gemini Live mode object search stream.
+  /// Streams natural sighted-companion guidance token-by-token.
+  Future<ObjectSearchResult> locateObjectLive({
+    required String targetObject,
+    required Uint8List imageBytes,
+    void Function(String partialChunk)? onStreamChunk,
+  }) async {
+    if (AppConfig.isMockMode) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      final mock = _mockObjectSearch(targetObject);
+      onStreamChunk?.call(mock.description);
+      return mock;
+    }
+
+    try {
+      final prompt = '''
+You are Sight Mate in Gemini Live Mode helping a blind user find "$targetObject".
+Look at the camera view. In 1 to 2 short, natural conversational sentences:
+- If "$targetObject" is visible: describe where it is relative to their body or items nearby (e.g. "Found it! Your $targetObject is right next to the laptop, about arm's length ahead.").
+- If NOT visible: tell them briefly what is in view and guide their turn (e.g. "I see an empty table. Turn slowly to your left.").
+Be direct, conversational, and spatial.
+''';
+
+      final model = _getSearchModel();
+      final stream = model.generateContentStream([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ]),
+      ]);
+
+      final buffer = StringBuffer();
+      await for (final chunk in stream) {
+        final text = chunk.text;
+        if (text != null && text.isNotEmpty) {
+          buffer.write(text);
+          onStreamChunk?.call(text);
+        }
+      }
+
+      final rawText = buffer.toString().trim();
+      return _parseObjectSearchResult(rawText, targetObject);
+    } catch (e) {
+      debugPrint('[GeminiService] locateObjectLive error: $e');
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.notFound,
+        direction: ObjectDirection.unknown,
+        distance: 'unknown',
+        description: 'Unable to analyze frame.',
+        guidance: 'Turn phone slowly to continue scanning.',
+        rawResponse: e.toString(),
+      );
+    }
+  }
+
   ObjectSearchResult _parseObjectSearchResult(String rawText, String targetObject) {
     final text = rawText.trim();
     final lower = text.toLowerCase();
+    final targetLower = targetObject.toLowerCase();
 
-    // 1. Direct compact format: FOUND: [direction], [distance]
-    if (lower.startsWith('found') || lower.contains('found:')) {
+    // Check if target was explicitly NOT visible
+    final isExplicitlyNotFound = lower.contains("don't see") ||
+        lower.contains("not visible") ||
+        lower.contains("not found") ||
+        lower.contains("no $targetLower") ||
+        lower.contains("can't see");
+
+    final isFound = !isExplicitlyNotFound && (
+        lower.contains('found') ||
+        lower.contains('i see the $targetLower') ||
+        lower.contains('i see your $targetLower') ||
+        lower.contains('i see a $targetLower') ||
+        lower.contains('there is your $targetLower') ||
+        lower.contains('here is your $targetLower') ||
+        lower.startsWith('found:')
+    );
+
+    if (isFound) {
       ObjectDirection dir = ObjectDirection.ahead;
       if (lower.contains('far left')) {
         dir = ObjectDirection.farLeft;
@@ -388,7 +460,7 @@ RULES:
       final match = RegExp(r'(\d+(?:\.\d+)?\s*(?:metres|meters|metre|meter|m|steps|step|feet|ft))', caseSensitive: false).firstMatch(text);
       if (match != null) {
         dist = match.group(1)!;
-      } else if (lower.contains('close') || lower.contains('nearby')) {
+      } else if (lower.contains('close') || lower.contains('nearby') || lower.contains("arm's length")) {
         dist = 'close to you';
       }
 
@@ -396,7 +468,7 @@ RULES:
         status: TargetDetectionStatus.found,
         direction: dir,
         distance: dist,
-        description: 'I see the $targetObject $dist.',
+        description: text.isNotEmpty ? text : 'I see the $targetObject $dist.',
         guidance: '',
         rawResponse: rawText,
       );
@@ -412,7 +484,7 @@ RULES:
         status: TargetDetectionStatus.uncertain,
         direction: dir,
         distance: 'partially visible',
-        description: 'Possible $targetObject in view.',
+        description: text.isNotEmpty ? text : 'Possible $targetObject in view.',
         guidance: 'Turn phone slightly to center it.',
         rawResponse: rawText,
       );
@@ -448,7 +520,7 @@ RULES:
       status: TargetDetectionStatus.notFound,
       direction: ObjectDirection.unknown,
       distance: 'unknown',
-      description: 'Object not visible.',
+      description: text.isNotEmpty ? text : 'Object not visible.',
       guidance: 'Continue turning slowly.',
       rawResponse: rawText,
     );

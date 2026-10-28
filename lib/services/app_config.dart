@@ -17,9 +17,9 @@ class AppConfig {
   static bool get hasGoogleMapsApiKey =>
       googleMapsApiKey.trim().isNotEmpty && googleMapsApiKey.startsWith('AIza');
 
-  /// Default to 'gemini-3.5-flash-lite' for ultra-fast multimodal response latency.
+  /// Default to 'gemini-3.5-flash' for ultra-fast multimodal response latency.
   static String get geminiModel =>
       dotenv.env['GEMINI_MODEL']?.isNotEmpty == true
           ? dotenv.env['GEMINI_MODEL']!
-          : 'gemini-3.5-flash-lite';
+          : 'gemini-3.5-flash';
 }

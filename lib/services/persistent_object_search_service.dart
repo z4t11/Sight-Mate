@@ -4,6 +4,7 @@ import '../models/object_search_models.dart';
 import 'audio_priority_manager.dart';
 import 'camera_service.dart';
 import 'gemini_service.dart';
+import 'haptic_service.dart';
 import 'local_perception_service.dart';
 import 'positioning_service.dart';
 
@@ -73,67 +74,72 @@ class PersistentObjectSearchService extends ChangeNotifier {
     _lastAnnouncement = 'Looking for $clean…';
     notifyListeners();
 
-    // Requirement 3: Brief acknowledgement if searching takes time (>1.1s)
-    bool firstFrameCompleted = false;
-    final ackTimer = Timer(const Duration(milliseconds: 1100), () {
-      if (_sessionId == currentSession &&
-          !firstFrameCompleted &&
-          _state == ObjectSearchState.searching) {
-        _audio.speak(
-          text: "Sure, I'll look.",
-          priority: AudioPriority.conversationalResponse,
-        );
-      }
-    });
+    // Start with prompt acknowledgment
+    final startNotice = 'Looking for $clean…';
+    _lastAnnouncement = startNotice;
+    notifyListeners();
+    _audio.speak(
+      text: "Looking for the $clean.",
+      priority: AudioPriority.conversationalResponse,
+    );
 
-    // Requirement 2: Inspect current camera frame immediately.
-    // If object is ALREADY visible, describe location directly without announcing a search!
+    // Inspect current camera frame with Gemini Live stream
     try {
       final frame = await _camera.captureFrame();
       if (frame != null && _sessionId == currentSession) {
-        // Continuous safety awareness check
-        final localAlert = await _localPerception.analyzeFrame(frame);
-        if (localAlert != null && localAlert.confidence >= 0.7) {
-          ackTimer.cancel();
-          await _audio.speak(
-            text: "${localAlert.spokenWarning} Stand still while scanning.",
-            priority: AudioPriority.urgentHazard,
-          );
-        }
+        // Continuous safety check runs in background without blocking vision query
+        _localPerception.analyzeFrame(frame).then((localAlert) {
+          if (localAlert != null && localAlert.confidence >= 0.7 && _sessionId == currentSession) {
+            _audio.speak(
+              text: "${localAlert.spokenWarning} Stand still while scanning.",
+              priority: AudioPriority.urgentHazard,
+            );
+          }
+        });
 
-        final result = await _gemini.locateObject(
+        final sentenceBuffer = StringBuffer();
+        bool firstSentenceSpoken = false;
+
+        final result = await _gemini.locateObjectLive(
           targetObject: clean,
           imageBytes: frame,
+          onStreamChunk: (chunk) {
+            sentenceBuffer.write(chunk);
+            final full = sentenceBuffer.toString();
+            if (!firstSentenceSpoken && (full.contains('.') || full.contains('!') || full.contains('?'))) {
+              firstSentenceSpoken = true;
+              final firstSentence = full.split(RegExp(r'[.!?]')).first.trim();
+              if (firstSentence.isNotEmpty && _sessionId == currentSession && !_audio.isSpeaking) {
+                _lastAnnouncement = firstSentence;
+                notifyListeners();
+                _audio.speak(
+                  text: firstSentence,
+                  priority: AudioPriority.conversationalResponse,
+                );
+              }
+            }
+          },
         );
-
-        firstFrameCompleted = true;
-        ackTimer.cancel();
 
         if (_sessionId == currentSession && _state != ObjectSearchState.idle) {
           if (result.status == TargetDetectionStatus.found) {
-            // Found immediately in view! Describe location and finish.
             await _handleTargetFound(result, currentSession);
             return;
           } else if (result.status == TargetDetectionStatus.uncertain) {
             await _handleTargetUncertain(result, currentSession);
           } else {
-            // Requirement 4: Not visible yet; guide user to scan slowly.
-            final initialGuidance = "I don't see it yet. Slowly turn to your left.";
-            _lastAnnouncement = initialGuidance;
-            notifyListeners();
-            await _audio.speak(
-              text: initialGuidance,
-              priority: AudioPriority.conversationalResponse,
-            );
+            if (!firstSentenceSpoken && result.description.isNotEmpty && !result.description.contains('Unable to analyze')) {
+              _lastAnnouncement = result.description;
+              notifyListeners();
+              await _audio.speak(
+                text: result.description,
+                priority: AudioPriority.conversationalResponse,
+              );
+            }
           }
         }
-      } else {
-        firstFrameCompleted = true;
-        ackTimer.cancel();
       }
     } catch (e) {
-      firstFrameCompleted = true;
-      ackTimer.cancel();
       debugPrint('[ObjectSearch] Initial frame error: $e');
     }
 
@@ -260,11 +266,12 @@ class PersistentObjectSearchService extends ChangeNotifier {
     if (_isProcessingFrame) return;
     if (_sessionId != session) return;
     if (!_camera.isReady) return;
+    if (_audio.isSpeaking) return;
 
     _isProcessingFrame = true;
 
     try {
-      // 1. Capture current frame from camera
+      // 1. Capture current frame from camera (native compact JPEG)
       final frame = await _camera.captureFrame();
       if (frame == null || _sessionId != session) {
         _isProcessingFrame = false;
@@ -273,19 +280,39 @@ class PersistentObjectSearchService extends ChangeNotifier {
 
       _framesAnalyzed++;
 
-      // 2. Continuous Safety Awareness check: verify user isn't about to bump into an obstacle
-      final localAlert = await _localPerception.analyzeFrame(frame);
-      if (localAlert != null && localAlert.confidence >= 0.7) {
-        await _audio.speak(
-          text: "${localAlert.spokenWarning} Stand still while scanning.",
-          priority: AudioPriority.urgentHazard,
-        );
-      }
+      // 2. Safety check runs in background without blocking vision stream
+      _localPerception.analyzeFrame(frame).then((localAlert) {
+        if (localAlert != null && localAlert.confidence >= 0.7 && _sessionId == session) {
+          _audio.speak(
+            text: "${localAlert.spokenWarning} Stand still while scanning.",
+            priority: AudioPriority.urgentHazard,
+          );
+        }
+      });
 
-      // 3. Analyze frame with Gemini object locator
-      final result = await _gemini.locateObject(
+      // 3. Stream Gemini Live multimodal observation
+      final sentenceBuffer = StringBuffer();
+      bool firstSentenceSpoken = false;
+
+      final result = await _gemini.locateObjectLive(
         targetObject: _activeTarget!,
         imageBytes: frame,
+        onStreamChunk: (chunk) {
+          sentenceBuffer.write(chunk);
+          final full = sentenceBuffer.toString();
+          if (!firstSentenceSpoken && (full.contains('.') || full.contains('!') || full.contains('?'))) {
+            firstSentenceSpoken = true;
+            final firstSentence = full.split(RegExp(r'[.!?]')).first.trim();
+            if (firstSentence.isNotEmpty && _sessionId == session && !_audio.isSpeaking) {
+              _lastAnnouncement = firstSentence;
+              notifyListeners();
+              _audio.speak(
+                text: firstSentence,
+                priority: AudioPriority.conversationalResponse,
+              );
+            }
+          }
+        },
       );
 
       // Verify session hasn't been cancelled or replaced during async call
@@ -300,7 +327,12 @@ class PersistentObjectSearchService extends ChangeNotifier {
       } else if (result.status == TargetDetectionStatus.uncertain) {
         await _handleTargetUncertain(result, session);
       } else {
-        await _handleTargetNotFound(session);
+        if (!firstSentenceSpoken) {
+          await _handleTargetNotFound(session, liveGuidance: result.description);
+        } else {
+          _state = ObjectSearchState.guiding;
+          notifyListeners();
+        }
       }
     } catch (e) {
       debugPrint('[ObjectSearch] Error processing frame: $e');
@@ -312,23 +344,14 @@ class PersistentObjectSearchService extends ChangeNotifier {
   Future<void> _handleTargetFound(ObjectSearchResult result, int session) async {
     _state = ObjectSearchState.found;
     _consecutiveNotFoundFrames = 0;
+    await HapticService.confirm();
 
     String announcement;
-    final dir = result.direction;
-    final dist = result.distance != 'unknown' ? ', ${result.distance}' : '';
-
-    if (dir == ObjectDirection.ahead) {
-      announcement = "The $_activeTarget is right ahead of you$dist.";
-    } else if (dir == ObjectDirection.left || dir == ObjectDirection.farLeft) {
-      announcement =
-          "The $_activeTarget is on your left$dist. Turn your phone a little to the left.";
-    } else if (dir == ObjectDirection.right || dir == ObjectDirection.farRight) {
-      announcement =
-          "The $_activeTarget is on your right$dist. Turn your phone a little to the right.";
-    } else if (dir == ObjectDirection.nearEdge) {
-      announcement =
-          "Part of the $_activeTarget is near the edge of view$dist. Turn slightly to center it.";
+    if (result.description.isNotEmpty && !result.description.contains('Unable to analyze')) {
+      announcement = result.description;
     } else {
+      final dir = result.direction;
+      final dist = result.distance != 'unknown' ? ', ${result.distance}' : '';
       announcement = "Found the $_activeTarget$dist. ${dir.turnInstruction}";
     }
 
@@ -338,6 +361,7 @@ class PersistentObjectSearchService extends ChangeNotifier {
     await _audio.speak(
       text: announcement,
       priority: AudioPriority.conversationalResponse,
+      interruptSame: true,
     );
   }
 
@@ -368,15 +392,15 @@ class PersistentObjectSearchService extends ChangeNotifier {
     );
   }
 
-  Future<void> _handleTargetNotFound(int session) async {
+  Future<void> _handleTargetNotFound(int session, {String? liveGuidance}) async {
     _state = ObjectSearchState.guiding;
     _consecutiveNotFoundFrames++;
     notifyListeners();
 
     final now = DateTime.now();
-    // Only speak guidance every 4.5 seconds to prevent repetitive voice spam
+    // Paced guidance interval
     if (_lastSpokenGuidanceTime != null &&
-        now.difference(_lastSpokenGuidanceTime!) < const Duration(milliseconds: 4500)) {
+        now.difference(_lastSpokenGuidanceTime!) < const Duration(milliseconds: 3000)) {
       return;
     }
 
@@ -384,30 +408,23 @@ class PersistentObjectSearchService extends ChangeNotifier {
 
     final curHeading = _positioning.currentHeading;
     final diff = ((curHeading - _startHeading).abs() % 360).round();
-    debugPrint(
-        '[ObjectSearch] Frame $_framesAnalyzed for $_activeTarget (heading: ${curHeading.toStringAsFixed(0)}°, rot: $diff°)');
+    debugPrint('[ObjectSearch] Frame $_framesAnalyzed for $_activeTarget (heading: ${curHeading.toStringAsFixed(0)}°, rot: $diff°)');
 
     String guidance;
-    final count = _consecutiveNotFoundFrames;
-
-    if (count <= 2) {
-      guidance =
-          "Still looking. Slowly turn to your $_scanDirection.";
-    } else if (count <= 5) {
-      guidance = "Keep turning slowly, looking for the $_activeTarget.";
-    } else if (diff >= 150 && diff <= 210 && count >= 6) {
-      guidance =
-          "You've turned halfway around. Still scanning.";
-    } else if (diff >= 310 && count >= 9) {
-      guidance =
-          "Almost a full circle. Try tilting slightly down toward the floor.";
-    } else if (count <= 9) {
-      guidance =
-          "Keep turning slowly at chest height.";
+    if (liveGuidance != null &&
+        liveGuidance.isNotEmpty &&
+        !liveGuidance.contains('Object not visible') &&
+        !liveGuidance.contains('Unable to analyze')) {
+      guidance = liveGuidance;
     } else {
-      final alternate = _scanDirection == 'left' ? 'right' : 'left';
-      guidance =
-          "Still don't see it. Try turning slowly back to the $alternate.";
+      final count = _consecutiveNotFoundFrames;
+      if (count <= 2) {
+        guidance = "Still looking. Slowly turn to your $_scanDirection.";
+      } else if (count <= 5) {
+        guidance = "Keep turning slowly, looking for the $_activeTarget.";
+      } else {
+        guidance = "Keep turning slowly at chest height.";
+      }
     }
 
     _lastAnnouncement = guidance;
