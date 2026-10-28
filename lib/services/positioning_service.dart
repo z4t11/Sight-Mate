@@ -26,10 +26,12 @@ class PositioningService {
   StreamSubscription? _stepSub;
   Timer? _gpsTimer;
   final StreamController<int> _stepController = StreamController<int>.broadcast();
+  final StreamController<double> _headingController = StreamController<double>.broadcast();
 
   NavState get state => _state;
   double get currentHeading => _heading;
   Stream<int> get onStepStream => _stepController.stream;
+  Stream<double> get onHeadingStream => _headingController.stream;
 
   PositioningService(this._map, [this._gps]);
 
@@ -38,6 +40,7 @@ class PositioningService {
     // Compass heading
     _compassSub = magnetometerEventStream().listen((event) {
       _heading = _calculateHeading(event.x, event.y);
+      _headingController.add(_heading);
       _state = _state.copyWith(headingDegrees: _heading);
     });
 
@@ -197,6 +200,7 @@ class PositioningService {
     _compassSub?.cancel();
     _stepSub?.cancel();
     _stepController.close();
+    _headingController.close();
     _textRecognizer.close();
   }
 }

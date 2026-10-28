@@ -1,6 +1,8 @@
-import 'dart:typed_data';
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import '../models/conversation_turn.dart';
+import '../models/object_search_models.dart';
 import '../models/verbosity_level.dart';
 import 'app_config.dart';
 
@@ -37,25 +39,28 @@ VERBOSITY MODES (the user message will tell you which to use):
       model: AppConfig.geminiModel,
       apiKey: AppConfig.geminiApiKey,
       systemInstruction: Content.system(_systemPrompt),
-      generationConfig: GenerationConfig(maxOutputTokens: 1000),
+      generationConfig: GenerationConfig(maxOutputTokens: 180),
     );
     return _model!;
   }
 
-  /// Ask a question. Pass [imageBytes] (PNG) for camera questions, or null for text-only.
-  /// Returns a short spoken answer, or an error string the caller can speak directly.
+  /// Ask a question. Pass [imageBytes] (PNG/JPEG) for camera questions, or null for text-only.
+  /// Streams response tokens via [onStreamChunk] for instant Live Mode speech, and returns final answer.
   Future<String> ask({
     required String question,
     Uint8List? imageBytes,
     required VerbosityLevel verbosity,
+    void Function(String partialChunk)? onStreamChunk,
   }) async {
     // ── MOCK MODE ────────────────────────────────────────────────
     if (AppConfig.isMockMode) {
-      await Future.delayed(const Duration(milliseconds: 900));
-      return _mockResponse(question, verbosity);
+      await Future.delayed(const Duration(milliseconds: 600));
+      final res = _mockResponse(question, verbosity);
+      onStreamChunk?.call(res);
+      return res;
     }
 
-    // ── REAL API ─────────────────────────────────────────────────
+    // ── REAL API (Streaming with Token Accumulator) ──────────────
     try {
       final model = _getModel();
 
@@ -70,33 +75,44 @@ VERBOSITY MODES (the user message will tell you which to use):
 
       // Build current message: verbosity prefix + optional image + question.
       final parts = <Part>[];
-      parts.add(TextPart('Verbosity: ${verbosity.label}.'));
+      parts.add(TextPart('Verbosity: ${verbosity.label}. Keep answer concise (2-3 sentences max).'));
       if (imageBytes != null) {
         parts.add(DataPart('image/jpeg', imageBytes));
       }
       parts.add(TextPart(question));
 
       print('SIGHT_MATE [GEMINI REQUEST]: question="$question", verbosity=${verbosity.label}, hasImage=${imageBytes != null}');
-      final response = await chat.sendMessage(Content.multi(parts));
-      final answer = response.text?.trim() ?? 'No response from AI.';
-      print('SIGHT_MATE [GEMINI ANSWER]: "$answer"');
+
+      final StringBuffer fullAnswer = StringBuffer();
+      final stream = chat.sendMessageStream(Content.multi(parts));
+      await for (final chunk in stream) {
+        final text = chunk.text;
+        if (text != null && text.isNotEmpty) {
+          fullAnswer.write(text);
+          onStreamChunk?.call(text);
+        }
+      }
+
+      final answer = fullAnswer.toString().trim();
+      final finalAnswer = answer.isNotEmpty ? answer : 'No response from AI.';
+      print('SIGHT_MATE [GEMINI ANSWER]: "$finalAnswer"');
 
       // Store turn in history.
       _history.add(ConversationTurn(
         question: question,
-        answer: answer,
+        answer: finalAnswer,
         timestamp: DateTime.now(),
       ));
       if (_history.length > _maxHistory) {
         _history.removeAt(0);
       }
 
-      return answer;
+      return finalAnswer;
     } on GenerativeAIException catch (e) {
       print('SIGHT_MATE [GEMINI EXCEPTION]: ${e.message}');
       final msg = e.message.toLowerCase();
       if (msg.contains('quota') || msg.contains('429') || msg.contains('resource')) {
-        return "I'm getting too many requests right now. Please try again in a moment.";
+        return "I'm receiving requests too quickly. Please pause a moment.";
       }
       return "The AI couldn't respond. ${_shortError(e.message)}";
     } catch (e) {
@@ -295,6 +311,178 @@ RULES:
     } catch (e) {
       print('SIGHT_MATE [MOVIE DESC ERROR]: $e');
       return "The scene shifts to a new view.";
+    }
+  }
+
+  int _mockSearchCount = 0;
+
+  GenerativeModel? _searchModel;
+
+  GenerativeModel _getSearchModel() {
+    _searchModel ??= GenerativeModel(
+      model: AppConfig.geminiModel,
+      apiKey: AppConfig.geminiApiKey,
+      generationConfig: GenerationConfig(maxOutputTokens: 25),
+    );
+    return _searchModel!;
+  }
+
+  /// Persistent 360-degree object search analyzer (Section 3 & Section 4).
+  /// Ultra-compact token economy: ~20 input tokens, ~6 output tokens.
+  Future<ObjectSearchResult> locateObject({
+    required String targetObject,
+    required Uint8List imageBytes,
+  }) async {
+    if (AppConfig.isMockMode) {
+      await Future.delayed(const Duration(milliseconds: 600));
+      return _mockObjectSearch(targetObject);
+    }
+
+    try {
+      final prompt = 'Is "$targetObject" clearly visible? In under 8 words, answer ONLY: "FOUND: [ahead/left/right], [distance]" or "NOT_FOUND".';
+
+      final model = _getSearchModel();
+      final response = await model.generateContent([
+        Content.multi([
+          DataPart('image/jpeg', imageBytes),
+          TextPart(prompt),
+        ]),
+      ]);
+
+      final rawText = response.text?.trim() ?? '';
+      return _parseObjectSearchResult(rawText, targetObject);
+    } catch (e) {
+      debugPrint('[GeminiService] locateObject error: $e');
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.notFound,
+        direction: ObjectDirection.unknown,
+        distance: 'unknown',
+        description: 'Unable to analyze frame.',
+        guidance: 'Turn phone slowly to continue scanning.',
+        rawResponse: e.toString(),
+      );
+    }
+  }
+
+  ObjectSearchResult _parseObjectSearchResult(String rawText, String targetObject) {
+    final text = rawText.trim();
+    final lower = text.toLowerCase();
+
+    // 1. Direct compact format: FOUND: [direction], [distance]
+    if (lower.startsWith('found') || lower.contains('found:')) {
+      ObjectDirection dir = ObjectDirection.ahead;
+      if (lower.contains('far left')) {
+        dir = ObjectDirection.farLeft;
+      } else if (lower.contains('far right')) {
+        dir = ObjectDirection.farRight;
+      } else if (lower.contains('left')) {
+        dir = ObjectDirection.left;
+      } else if (lower.contains('right')) {
+        dir = ObjectDirection.right;
+      } else if (lower.contains('ahead') || lower.contains('center') || lower.contains('front')) {
+        dir = ObjectDirection.ahead;
+      }
+
+      // Extract distance if present
+      String dist = 'about 2 metres';
+      final match = RegExp(r'(\d+(?:\.\d+)?\s*(?:metres|meters|metre|meter|m|steps|step|feet|ft))', caseSensitive: false).firstMatch(text);
+      if (match != null) {
+        dist = match.group(1)!;
+      } else if (lower.contains('close') || lower.contains('nearby')) {
+        dist = 'close to you';
+      }
+
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.found,
+        direction: dir,
+        distance: dist,
+        description: 'I see the $targetObject $dist.',
+        guidance: '',
+        rawResponse: rawText,
+      );
+    }
+
+    // 2. Direct compact format: UNCERTAIN: [direction], [distance]
+    if (lower.startsWith('uncertain') || lower.contains('uncertain:')) {
+      ObjectDirection dir = ObjectDirection.ahead;
+      if (lower.contains('left')) dir = ObjectDirection.left;
+      if (lower.contains('right')) dir = ObjectDirection.right;
+
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.uncertain,
+        direction: dir,
+        distance: 'partially visible',
+        description: 'Possible $targetObject in view.',
+        guidance: 'Turn phone slightly to center it.',
+        rawResponse: rawText,
+      );
+    }
+
+    // 3. Fallback: JSON parsing (if model still returned JSON)
+    try {
+      final start = rawText.indexOf('{');
+      final end = rawText.lastIndexOf('}');
+      if (start != -1 && end != -1 && end > start) {
+        final jsonStr = rawText.substring(start, end + 1);
+        final map = jsonDecode(jsonStr) as Map<String, dynamic>;
+        final statusStr = (map['status'] ?? '').toString().toLowerCase();
+        if (statusStr == 'found') {
+          final dirStr = (map['direction'] ?? '').toString().toLowerCase();
+          ObjectDirection direction = ObjectDirection.ahead;
+          if (dirStr.contains('left')) direction = ObjectDirection.left;
+          if (dirStr.contains('right')) direction = ObjectDirection.right;
+          return ObjectSearchResult(
+            status: TargetDetectionStatus.found,
+            direction: direction,
+            distance: map['distance']?.toString() ?? 'about 2 metres',
+            description: map['description']?.toString() ?? 'Target found.',
+            guidance: '',
+            rawResponse: rawText,
+          );
+        }
+      }
+    } catch (_) {}
+
+    // 4. Default: NOT_FOUND
+    return ObjectSearchResult(
+      status: TargetDetectionStatus.notFound,
+      direction: ObjectDirection.unknown,
+      distance: 'unknown',
+      description: 'Object not visible.',
+      guidance: 'Continue turning slowly.',
+      rawResponse: rawText,
+    );
+  }
+
+  ObjectSearchResult _mockObjectSearch(String target) {
+    _mockSearchCount++;
+    if (_mockSearchCount % 3 == 1) {
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.notFound,
+        direction: ObjectDirection.unknown,
+        distance: 'unknown',
+        description: 'No $target visible in the immediate camera view.',
+        guidance: 'Slowly turn your phone to the left.',
+        rawResponse: 'Mock not found',
+      );
+    } else if (_mockSearchCount % 3 == 2) {
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.uncertain,
+        direction: ObjectDirection.right,
+        distance: 'about 3 metres away',
+        description: 'I can see the possible edge of a $target on the right boundary.',
+        guidance: 'Turn your phone slightly to the right to center it.',
+        rawResponse: 'Mock uncertain',
+      );
+    } else {
+      return ObjectSearchResult(
+        status: TargetDetectionStatus.found,
+        direction: ObjectDirection.ahead,
+        distance: 'about 2 metres away',
+        description: 'A $target is directly ahead of you, about 2 metres away.',
+        guidance: 'Walk straight ahead towards it.',
+        rawResponse: 'Mock found',
+      );
     }
   }
 

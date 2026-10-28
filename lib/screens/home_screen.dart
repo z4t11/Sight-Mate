@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:camera/camera.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/app_intent.dart';
@@ -18,10 +19,21 @@ import '../services/positioning_service.dart';
 import '../services/navigation_service.dart';
 import '../services/gps_service.dart';
 import '../services/hardware_button_service.dart';
+import '../services/audio_priority_manager.dart';
+import '../services/local_perception_service.dart';
+import '../services/live_vision_session.dart';
+import '../services/clew_route_follower.dart';
+import '../services/outdoor_routing_service.dart';
+import '../services/outdoor_safety_guardian.dart';
+import '../services/ocr_service.dart';
+import '../services/unified_navigation_coordinator.dart';
+import '../models/object_search_models.dart';
+import '../services/persistent_object_search_service.dart';
 import 'bridge_mode_screen.dart';
 import 'movie_mode_screen.dart';
 import 'test_log_screen.dart';
 import 'route_recorder_screen.dart';
+import '../utils/scene_differ.dart';
 
 enum _ListenState { idle, listening, processing }
 
@@ -43,11 +55,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _map      = MapLoader();
   final _gps      = GpsService();
   final _hwButtons = HardwareButtonService();
+  final _sceneDiffer = SceneDiffer();
+  final _localPerception = LocalPerceptionService();
+  final _ocr = OcrService();
+
+  late final AudioPriorityManager _audioPriority;
+  late final LiveVisionSession _liveVision;
+  late final ClewRouteFollower _clewFollower;
+  late final OutdoorRoutingService _outdoorRouter;
+  late final OutdoorSafetyGuardian _outdoorGuardian;
+  late final UnifiedNavigationCoordinator _coordinator;
+  late final PersistentObjectSearchService _objectSearch;
 
   late PositioningService _positioning;
   late NavigationService  _nav;
 
   StreamSubscription<int>? _stepSub;
+  StreamSubscription<double>? _headingSub;
   _ListenState _state      = _ListenState.idle;
   String       _statusMsg  = 'Double-click Vol Up or tap to ask';
   String       _transcript = '';
@@ -61,16 +85,78 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WakelockPlus.enable();
     WidgetsBinding.instance.addObserver(this);
     _hwButtons.addListener(_onHardwareButton);
+    _audioPriority = AudioPriorityManager(_tts);
     _positioning = PositioningService(_map, _gps);
     _nav = NavigationService(map: _map, positioning: _positioning, gps: _gps);
+    _liveVision = LiveVisionSession(
+      camera: _camera,
+      gemini: _gemini,
+      audio: _audioPriority,
+    );
+    _clewFollower = ClewRouteFollower(
+      camera: _camera,
+      gemini: _gemini,
+      audio: _audioPriority,
+      localPerception: _localPerception,
+    );
+    _outdoorRouter = OutdoorRoutingService(_gps);
+    _outdoorGuardian = OutdoorSafetyGuardian(
+      camera: _camera,
+      gemini: _gemini,
+      audio: _audioPriority,
+      localPerception: _localPerception,
+    );
+    _objectSearch = PersistentObjectSearchService(
+      camera: _camera,
+      gemini: _gemini,
+      audio: _audioPriority,
+      positioning: _positioning,
+      localPerception: _localPerception,
+    );
+    _coordinator = UnifiedNavigationCoordinator(
+      gps: _gps,
+      audio: _audioPriority,
+      clewFollower: _clewFollower,
+      outdoorRouter: _outdoorRouter,
+      outdoorGuardian: _outdoorGuardian,
+      liveVision: _liveVision,
+      objectSearch: _objectSearch,
+      map: _map,
+      positioning: _positioning,
+    );
+    _objectSearch.addListener(_onObjectSearchChanged);
     _stepSub = _positioning.onStepStream.listen(_onPedometerStep);
+    _headingSub = _positioning.onHeadingStream.listen(_onHeadingChanged);
+    _gps.addListener(_onGpsChanged);
     _init();
+  }
+
+  void _onObjectSearchChanged() {
+    if (mounted) {
+      setState(() {
+        if (_objectSearch.isSearching || _objectSearch.state == ObjectSearchState.found) {
+          _statusMsg = _objectSearch.lastAnnouncement ?? 'Searching for ${_objectSearch.activeTarget}…';
+        }
+      });
+    }
+  }
+
+  void _onGpsChanged() {
+    if (mounted) setState(() {});
   }
 
   /// Live step listener: automatically guides the user through each turn as steps are taken.
   void _onPedometerStep(int delta) async {
+    // 0. If Unified Coordinator is actively navigating (Clew indoor route or guiding to exit)
+    if (_coordinator.isNavigating) {
+      _coordinator.onStep(delta);
+      return;
+    }
+
+    // 1. Legacy campus graph navigation fallback
     if (!_positioning.state.isNavigating) return;
 
     final update = _nav.onStep(delta);
@@ -83,19 +169,34 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     if (update.shouldSpeak) {
-      await HapticService.confirm();
-      await _tts.speak(update.message);
+      await _audioPriority.speak(
+        text: update.message,
+        priority: AudioPriority.navigationInstruction,
+      );
     }
   }
 
+  void _onHeadingChanged(double heading) {
+    if (_coordinator.isNavigating) {
+      _coordinator.updateHeading(heading);
+    }
+  }
+
+  bool _isCameraActive = true;
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _isCameraActive = false;
       if (mounted) setState(() {});
       _camera.dispose().then((_) {
         if (mounted) setState(() {});
       });
     } else if (state == AppLifecycleState.resumed) {
+      _isCameraActive = true;
       if (!_camera.isReady) {
         _camera.init().then((_) {
           if (mounted) setState(() {});
@@ -122,7 +223,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
 
     await _camera.init();
-    await _gps.init();
+    final gpsOk = await _gps.init();
+    if (!gpsOk && mounted) {
+      if (!_gps.isServiceEnabled) {
+        setState(() => _statusMsg = 'Turn on GPS in phone settings');
+      } else if (!_gps.hasPermission) {
+        setState(() => _statusMsg = 'Location permission needed');
+      }
+    }
     _positioning.start();
 
     if (mounted) setState(() {});
@@ -204,39 +312,196 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _handleTranscript(String text) async {
     if (text.isEmpty) {
       _setListenState(
-          _ListenState.idle, "I didn't hear anything. Double-click Vol Up or tap to ask.");
+          _ListenState.idle, "I didn't catch that. Double-click Vol Up or tap to ask.");
       await HapticService.error();
-      await _tts.speak("I didn't hear anything. Double-click Volume Up or tap to speak.");
+      await _tts.speak("I didn't catch that. Double-click Volume Up or tap to ask.");
       return;
     }
     setState(() => _transcript = text);
+
+    // If waiting for indoor vs outdoor clarification, route directly to coordinator
+    if (_coordinator.isWaitingForClarification) {
+      _setListenState(_ListenState.processing, 'Got it: "$text"');
+      final res = await _coordinator.handleClarification(text);
+      _setListenState(_ListenState.idle, res);
+      return;
+    }
+
     _setListenState(_ListenState.processing, 'Got it: "$text"');
     await _dispatchIntent(_router.route(text));
   }
 
   Future<void> _dispatchIntent(AppIntent intent) async {
+    // Stale search response protection (Section 5):
+    // If a new unrelated command arrives, pause/stop ongoing object search
+    if (intent.type != AppIntentType.findObject &&
+        intent.type != AppIntentType.switchFindObject &&
+        intent.type != AppIntentType.continueSearch &&
+        intent.type != AppIntentType.scanTurnCommand &&
+        intent.type != AppIntentType.stopSearch &&
+        intent.type != AppIntentType.stopSpeech) {
+      if (_objectSearch.isSearching) {
+        _objectSearch.stopSearch(speakNotice: false);
+      }
+    }
+
     switch (intent.type) {
       case AppIntentType.stopSpeech:
-        await _tts.stop();
+        await _audioPriority.stopAll();
+        _coordinator.stopAllNavigation();
+        if (_objectSearch.isSearching ||
+            _objectSearch.state == ObjectSearchState.found) {
+          _objectSearch.stopSearch(speakNotice: false);
+        }
         if (_positioning.state.isNavigating) {
           _nav.cancelNavigation();
-          await _tts.speak('Navigation stopped.');
+          await _audioPriority.speak(
+            text: 'Navigation stopped.',
+            priority: AudioPriority.systemNotice,
+          );
         }
         _setListenState(_ListenState.idle, 'Stopped. Tap to ask.');
         return;
 
-      // ── Camera Q&A ──────────────────────────────────────────────────────
+      case AppIntentType.confirmExit:
+        await HapticService.confirm();
+        await _coordinator.confirmBuildingExit();
+        _setListenState(_ListenState.idle, 'Exit confirmed.');
+        return;
+
+      case AppIntentType.confirmEntry:
+        await HapticService.confirm();
+        await _coordinator.confirmBuildingEntry();
+        _setListenState(_ListenState.idle, 'Building entry confirmed.');
+        return;
+
+      // ── Persistent 360° Object Search With Voice Guidance (Sections 1–6) ─
+      case AppIntentType.findObject:
+        await HapticService.thinking();
+        final target = intent.slot ?? intent.rawText;
+        _coordinator.stopAllNavigation();
+        final category = await _coordinator.categorizeDestination(target);
+        if (category == DestinationCategory.indoorSavedRoute) {
+          final res = await _coordinator.startNavigation(target);
+          _setListenState(_ListenState.idle, res);
+        } else {
+          await _objectSearch.startSearch(target);
+        }
+        return;
+
+      case AppIntentType.switchFindObject:
+        await HapticService.thinking();
+        final target = intent.slot ?? intent.rawText;
+        await _objectSearch.switchTarget(target);
+        return;
+
+      case AppIntentType.continueSearch:
+        await HapticService.confirm();
+        await _objectSearch.resumeSearch();
+        return;
+
+      case AppIntentType.scanTurnCommand:
+        if (_objectSearch.isSearching) {
+          await _objectSearch.setScanDirection(intent.slot ?? 'left');
+        } else {
+          await _tts.speak("Tell me what you'd like me to find first.");
+        }
+        return;
+
+      case AppIntentType.stopSearch:
+        await HapticService.confirm();
+        _objectSearch.stopSearch();
+        _setListenState(_ListenState.idle, 'Search stopped. Double-click Vol Up to ask.');
+        return;
+
+      // ── Dedicated Signboard & Noticeboard OCR Reading (Section 4) ─
+      case AppIntentType.readSign:
+        await HapticService.thinking();
+        _setListenState(_ListenState.processing, 'Looking at sign…');
+        final frame = await _camera.captureFrame();
+        if (frame != null) {
+          final ocrRes = await _ocr.readSignFromFrame(frame);
+          _setListenState(_ListenState.processing, ocrRes.spokenSummary);
+          await _audioPriority.speak(
+            text: ocrRes.spokenSummary,
+            priority: AudioPriority.conversationalResponse,
+          );
+        } else {
+          await _audioPriority.speak(
+            text: "I couldn't get a clear image of the sign. Try pointing the camera directly ahead.",
+            priority: AudioPriority.systemNotice,
+          );
+        }
+        _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+        return;
+
+      // ── Camera Q&A (Gemini Live Streaming Mode) ────────────────────────
       case AppIntentType.askCamera:
         await HapticService.thinking();
         _setListenState(_ListenState.processing, 'Looking…');
         final frame = await _camera.captureFrame();
+        _setListenState(_ListenState.processing, 'Thinking…');
+
+        // Streaming sentence accumulator: speaks as soon as the first sentence arrives!
+        final sentenceBuffer = StringBuffer();
+        bool firstSentenceSpoken = false;
+
         final answer = await _gemini.ask(
           question: intent.rawText,
           imageBytes: frame,
           verbosity: _settings.verbosity,
+          onStreamChunk: (chunk) {
+            sentenceBuffer.write(chunk);
+            final accumulated = sentenceBuffer.toString();
+            if (!firstSentenceSpoken &&
+                (accumulated.contains('. ') ||
+                    accumulated.contains('! ') ||
+                    accumulated.contains('? ') ||
+                    accumulated.contains('.\n'))) {
+              firstSentenceSpoken = true;
+              final splitIdx = accumulated.indexOf(RegExp(r'[\.!\?][\s\n]'));
+              if (splitIdx != -1) {
+                final firstSentence =
+                    accumulated.substring(0, splitIdx + 1).trim();
+                if (firstSentence.isNotEmpty) {
+                  _setListenState(_ListenState.processing, firstSentence);
+                  _audioPriority.speak(
+                    text: firstSentence,
+                    priority: AudioPriority.conversationalResponse,
+                  );
+                }
+              }
+            }
+          },
         );
-        _setListenState(_ListenState.processing, 'Speaking…');
-        await _tts.speak(answer);
+
+        if (!firstSentenceSpoken) {
+          _setListenState(_ListenState.processing, answer);
+          await _audioPriority.speak(
+            text: answer,
+            priority: AudioPriority.conversationalResponse,
+          );
+        } else {
+          final accumulated = sentenceBuffer.toString();
+          final splitIdx = accumulated.indexOf(RegExp(r'[\.!\?][\s\n]'));
+          if (splitIdx != -1 && splitIdx + 2 < accumulated.length) {
+            final remainder = accumulated.substring(splitIdx + 2).trim();
+            if (remainder.isNotEmpty) {
+              await _audioPriority.speak(
+                text: remainder,
+                priority: AudioPriority.conversationalResponse,
+              );
+            }
+          }
+        }
+
+        // Section 3: Start continuous hands-free live assistance session!
+        _liveVision.startSession(intent.rawText);
+        _setListenState(
+          _ListenState.idle,
+          'Live session active. Observing surroundings hands-free.',
+        );
+        return;
 
       // ── More detail ─────────────────────────────────────────────────────
       case AppIntentType.moreDetail:
@@ -288,7 +553,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           await _tts.speak("Got it. I've set your starting location to $loc.");
         }
 
-      // ── Navigate (GPS + Map + Camera Obstacle Avoidance) ────────────────
+      // ── Navigate (Unified Coordinator: Indoor Visual + Outdoor GPS + Camera Guardian) ─
       case AppIntentType.navigate:
         await HapticService.thinking();
         final rawDest = intent.slot?.trim();
@@ -296,36 +561,28 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ? rawDest
             : 'forward';
 
-        // Check if destination is on the campus graph or query specifies "from X to Y"
-        final isCampusDest = _map.findByName(dest) != null || dest.contains(' to ');
+        _setListenState(_ListenState.processing, 'Routing to $dest…');
 
-        if (isCampusDest) {
-          _setListenState(_ListenState.processing, 'Routing to $dest…');
-
-          // If starting node unknown, default intelligently based on query (e.g. staff room for lab/class, or entrance)
-          if (_positioning.state.currentNodeId == null) {
-            final qLower = dest.toLowerCase();
-            final defaultStart = (qLower.contains('lab') || qLower.contains('class') || qLower.contains('software'))
-                ? (_map.findByName('staff room')?.id ?? 'staff_room')
-                : (_map.nodes.isNotEmpty ? _map.nodes.keys.first : 'entrance');
-            _positioning.confirmLocation(defaultStart);
-          }
-
-          final routeMsg = _nav.handleNavigateCommand(dest);
-          await _tts.speak(routeMsg);
-          _setListenState(
-            _ListenState.idle,
-            'Navigating to $dest. Walk forward; app will guide every turn.',
-          );
-        } else {
-          // Visual Micro-Navigation with Obstacle Avoidance & Step Deviations
-          _positioning.setCustomLocation("Current spot");
-          _positioning.updateState(_positioning.state.copyWith(
-            isNavigating: true,
-            activeDestination: dest,
-          ));
-          await _provideNextObstacleAwareStep(dest);
+        // Check if query is formatted as "from [origin] to [destination]"
+        String originName = 'Staff Room';
+        String destinationName = dest;
+        final fromToPattern = RegExp(r'(?:from\s+)?(.+?)\s+to\s+(.+)', caseSensitive: false);
+        final match = fromToPattern.firstMatch(dest.trim());
+        if (match != null) {
+          originName = match.group(1)?.trim() ?? originName;
+          destinationName = match.group(2)?.trim() ?? destinationName;
         }
+
+        // Delegate to Unified Coordinator (Section 3)
+        final navSummary = await _coordinator.startNavigation(
+          destinationName,
+          origin: originName,
+        );
+
+        _setListenState(
+          _ListenState.idle,
+          navSummary.isNotEmpty ? navSummary : 'Navigation active. Double-click Vol Down to cancel.',
+        );
         return;
 
       // ── Route Recorder Mode ("Scan & Save") ──────────────────────────────
@@ -386,6 +643,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           positioning: _positioning,
           tts: _tts,
           stt: _stt,
+          camera: _camera,
+          gemini: _gemini,
         ),
       ),
     );
@@ -429,7 +688,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         "Safety Guardian active. Scanning continuously for drop-offs, stairs, and head-height hazards. Double-click Volume Down to exit.",
       );
       _safetyScanTimer =
-          Timer.periodic(const Duration(seconds: 3), (_) => _runSafetyScan());
+          Timer.periodic(const Duration(milliseconds: 4500), (_) => _runSafetyScan());
     } else {
       _safetyScanTimer?.cancel();
       _safetyScanTimer = null;
@@ -448,11 +707,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     try {
       final frame = await _camera.captureFrame();
       if (frame != null) {
+        // 1. Fast Local On-Device Perception (Section 4: 0ms network latency)
+        final localHazard = await _localPerception.analyzeFrame(frame);
+        if (localHazard != null && mounted && _isSafetyGuardianActive) {
+          _setListenState(_ListenState.processing, 'HAZARD: ${localHazard.spokenWarning}');
+          await _audioPriority.speak(
+            text: localHazard.spokenWarning,
+            priority: AudioPriority.urgentHazard,
+          );
+          _setListenState(_ListenState.idle, 'Double-click Vol Up or tap to ask');
+          return;
+        }
+
+        // 2. SceneDiffer check for high-level cloud safety analysis
+        final hasChange = await _sceneDiffer.hasSignificantChange(frame, thresholdPercent: 12.0);
+        if (!hasChange) return;
+
         final hazard = await _gemini.scanForImmediateHazards(frame);
         if (hazard != null && mounted && _isSafetyGuardianActive) {
-          await HapticService.hazardWarning();
           _setListenState(_ListenState.processing, 'HAZARD: $hazard');
-          await _tts.speak(hazard);
+          await _audioPriority.speak(
+            text: hazard,
+            priority: AudioPriority.urgentHazard,
+          );
           _setListenState(
               _ListenState.idle, 'Double-click Vol Up or tap to ask');
         }
@@ -620,7 +897,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           child: Stack(
             children: [
               // Camera preview (dimmed)
-              if (_camera.isReady && _camera.controller != null)
+              if (_isCameraActive && _camera.isReady && _camera.controller != null)
                 Positioned.fill(
                   child: Semantics(
                     excludeSemantics: true,
@@ -808,6 +1085,59 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ),
                       ),
 
+                    // Active Persistent Object Search Badge
+                    if (_objectSearch.isSearching ||
+                        _objectSearch.state == ObjectSearchState.found) ...[
+                      const SizedBox(height: 12),
+                      Semantics(
+                        excludeSemantics: true,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: _objectSearch.state == ObjectSearchState.found
+                                ? Colors.green.withValues(alpha: 0.25)
+                                : Colors.cyan.withValues(alpha: 0.2),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: _objectSearch.state == ObjectSearchState.found
+                                  ? Colors.greenAccent
+                                  : Colors.cyanAccent,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _objectSearch.state == ObjectSearchState.found
+                                    ? Icons.check_circle_outline
+                                    : Icons.radar,
+                                size: 16,
+                                color: _objectSearch.state == ObjectSearchState.found
+                                    ? Colors.greenAccent
+                                    : Colors.cyanAccent,
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                _objectSearch.state == ObjectSearchState.found
+                                    ? 'FOUND: ${_objectSearch.activeTarget?.toUpperCase()}'
+                                    : 'SEARCHING: ${_objectSearch.activeTarget?.toUpperCase()} (${_objectSearch.scanDirection.toUpperCase()})',
+                                style: TextStyle(
+                                  color: _objectSearch.state == ObjectSearchState.found
+                                      ? Colors.greenAccent
+                                      : Colors.cyanAccent,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.1,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+
                     // Status row: camera + map
                     const SizedBox(height: 12),
                     Semantics(
@@ -819,7 +1149,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                           const SizedBox(width: 16),
                           _statusDot(!_map.isEmpty, 'Map'),
                           const SizedBox(width: 16),
-                          _statusDot(_gps.isGpsAvailable || AppConfig.isMockMode, 'GPS'),
+                          GestureDetector(
+                            onTap: () async {
+                              if (!_gps.isServiceEnabled) {
+                                await _gps.openLocationSettings();
+                              } else {
+                                final pos = _gps.currentPosition;
+                                if (pos != null) {
+                                  await _tts.speak("GPS active at ${pos.latitude.toStringAsFixed(4)}, ${pos.longitude.toStringAsFixed(4)}, accuracy ${pos.accuracy.toStringAsFixed(0)} metres.");
+                                } else {
+                                  await _tts.speak("Searching for GPS satellites. Location permissions are active.");
+                                }
+                              }
+                            },
+                            child: _statusDot(
+                              _gps.isGpsAvailable || AppConfig.isMockMode,
+                              _gps.currentPosition != null
+                                  ? 'GPS'
+                                  : (_gps.isServiceEnabled && _gps.hasPermission ? 'GPS Fix' : 'GPS Off'),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -880,8 +1229,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       }
       return true;
     } else if (button == HardwareButton.volumeDown) {
-      // Physical Volume Down Double-Click: Instant STOP (Speech, STT, Navigation, or Safety Guardian)
-      _tts.stop();
+      // Physical Volume Down Double-Click: Instant STOP (Speech, STT, Unified Navigation, Object Search, or Safety Guardian)
+      _audioPriority.stopAll();
+      _coordinator.stopAllNavigation();
+      if (_objectSearch.isSearching ||
+          _objectSearch.state == ObjectSearchState.found) {
+        _objectSearch.stopSearch(speakNotice: false);
+      }
       _stt.cancel();
       if (_isSafetyGuardianActive) {
         _toggleSafetyGuardian(false);
@@ -900,13 +1254,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _stepSub?.cancel();
+    _headingSub?.cancel();
     _safetyScanTimer?.cancel();
     _hwButtons.removeListener(_onHardwareButton);
+    _coordinator.stopAllNavigation();
+    _clewFollower.dispose();
+    _objectSearch.removeListener(_onObjectSearchChanged);
+    _objectSearch.dispose();
+    _audioPriority.stopAll();
+    _ocr.dispose();
     _stt.stop();
     _tts.stop();
+    _gps.removeListener(_onGpsChanged);
     _gps.dispose();
     _camera.dispose();
     _positioning.dispose();
+    WakelockPlus.disable();
     super.dispose();
   }
 }

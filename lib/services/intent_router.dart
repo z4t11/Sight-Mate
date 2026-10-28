@@ -6,9 +6,54 @@ class IntentRouter {
   AppIntent route(String text) {
     final t = text.toLowerCase().trim();
 
+    // ── Stop Object Search (Explicit cancel) ──────────────────────
+    if (_contains(t, [
+      'stop searching', 'cancel search', 'stop looking', 'end search', 'cancel looking',
+    ])) {
+      return AppIntent(type: AppIntentType.stopSearch, rawText: text);
+    }
+
     // ── Stop (highest priority, check first) ──────────────────────
-    if (t == 'stop' || t == 'stop talking' || t == 'quiet') {
+    if (t == 'stop' || t == 'stop talking' || t == 'quiet' || t == 'cancel') {
       return AppIntent(type: AppIntentType.stopSpeech, rawText: text);
+    }
+
+    // ── Building Exit / Entry Confirmation ────────────────────────
+    if (_contains(t, [
+      'i am outside', "i'm outside", 'stepped outside', 'i reached outside',
+      'i have exited', "i've exited", 'exit confirmed',
+    ])) {
+      return AppIntent(type: AppIntentType.confirmExit, rawText: text);
+    }
+    if (_contains(t, [
+      'i am inside', "i'm inside", 'entered the building', 'i reached inside',
+      'i am indoors', "i'm indoors", 'entered building', 'inside the building',
+    ])) {
+      return AppIntent(type: AppIntentType.confirmEntry, rawText: text);
+    }
+
+    // ── Resume Object Search ("Keep looking") ──────────────────────
+    if (_contains(t, [
+      'keep looking', 'keep searching', 'continue searching',
+      'continue looking', 'keep tracking', 'look again', 'find it again',
+    ])) {
+      return AppIntent(type: AppIntentType.continueSearch, rawText: text);
+    }
+
+    // ── Scan Turn Direction ("Turn left" / "Turn right") ──────────
+    if (t == 'turn left' || t == 'scan left' || t == 'look left' || t == 'pan left') {
+      return AppIntent(type: AppIntentType.scanTurnCommand, rawText: text, slot: 'left');
+    }
+    if (t == 'turn right' || t == 'scan right' || t == 'look right' || t == 'pan right') {
+      return AppIntent(type: AppIntentType.scanTurnCommand, rawText: text, slot: 'right');
+    }
+
+    // ── Switch Object Search Target ("Find the door instead") ─────
+    if (t.contains('instead') || t.startsWith('switch to')) {
+      final obj = _extractTargetObject(t);
+      if (obj.isNotEmpty) {
+        return AppIntent(type: AppIntentType.switchFindObject, rawText: text, slot: obj);
+      }
     }
 
     // ── Emergency SOS (Priority 2) ────────────────────────────────
@@ -128,6 +173,25 @@ class IntentRouter {
           slot: level);
     }
 
+    // ── Dedicated Signboard & Noticeboard OCR Reading (Section 4) ─
+    if (_contains(t, [
+      'read the sign', 'read signboard', 'read the signboard',
+      'what does that sign say', 'what does the sign say',
+      'what does that notice say', 'what does the notice say',
+      'read notice', 'read the notice', 'read board', 'read the board',
+      'read poster', 'read the poster', 'read text on', 'read label',
+    ])) {
+      return AppIntent(type: AppIntentType.readSign, rawText: text);
+    }
+
+    // ── Persistent 360° Object Search ("Find a chair", "Where is the door") ─
+    if (_isFindObjectQuery(t)) {
+      final obj = _extractTargetObject(t);
+      if (obj.isNotEmpty) {
+        return AppIntent(type: AppIntentType.findObject, rawText: text, slot: obj);
+      }
+    }
+
     // ── Camera question (default for anything descriptive) ────────
     if (_contains(t, ['what', 'describe', 'read', 'tell me', 'look',
                        'see', 'color', 'colour', 'how many', 'is there',
@@ -145,9 +209,77 @@ class IntentRouter {
     for (final p in prefixes) {
       final idx = text.indexOf(p);
       if (idx != -1) {
-        return text.substring(idx + p.length).trim();
+        var res = text.substring(idx + p.length).trim();
+        res = res.replaceAll(RegExp(r'[\?\.\!]$'), '').trim();
+        if (res.startsWith('the ')) res = res.substring(4).trim();
+        if (res.startsWith('a ')) res = res.substring(2).trim();
+        if (res.startsWith('an ')) res = res.substring(3).trim();
+        return res;
       }
     }
     return text;
+  }
+
+  bool _isFindObjectQuery(String t) {
+    if (t.startsWith('take me') ||
+        t.startsWith('navigate') ||
+        t.startsWith('guide me') ||
+        t.startsWith('walk to') ||
+        t.startsWith('directions to')) {
+      return false;
+    }
+    return _contains(t, [
+      'find a ', 'find the ', 'find my ', 'find an ', 'find ',
+      'where is a ', 'where is the ', 'where is my ', 'where are my ', 'where are the ', 'where is ',
+      'locate a ', 'locate the ', 'locate my ', 'locate an ', 'locate ',
+      'look for a ', 'look for the ', 'look for my ', 'look for an ', 'look for ',
+      'search for a ', 'search for the ', 'search for my ', 'search for an ', 'search for ',
+      'spot the ', 'spot a ', 'can you find ', 'help me find ',
+    ]);
+  }
+
+  String _extractTargetObject(String text) {
+    var clean = text.toLowerCase().trim();
+    clean = clean.replaceAll('instead', '').replaceAll('switch to', '').trim();
+
+    final prefixes = [
+      'can you find a ', 'can you find the ', 'can you find an ', 'can you find ',
+      'help me find a ', 'help me find the ', 'help me find an ', 'help me find ',
+      'where are my ', 'where are the ', 'where is my ', 'where is the ', 'where is a ', 'where is an ', 'where is ',
+      'look for a ', 'look for the ', 'look for my ', 'look for an ', 'look for ',
+      'search for a ', 'search for the ', 'search for my ', 'search for an ', 'search for ',
+      'locate a ', 'locate the ', 'locate my ', 'locate an ', 'locate ',
+      'find a ', 'find the ', 'find my ', 'find an ', 'find ',
+      'spot a ', 'spot the ', 'spot an ', 'spot ',
+    ];
+
+    for (final p in prefixes) {
+      if (clean.startsWith(p)) {
+        clean = clean.substring(p.length).trim();
+        break;
+      }
+    }
+
+    clean = clean.replaceAll(RegExp(r'[\?\.\!]$'), '').trim();
+
+    final suffixes = [
+      ' for me',
+      ' for us',
+      ' please',
+      ' around here',
+      ' in here',
+      ' here',
+      ' right now',
+    ];
+    for (final s in suffixes) {
+      if (clean.endsWith(s)) {
+        clean = clean.substring(0, clean.length - s.length).trim();
+      }
+    }
+
+    if (clean.startsWith('a ')) clean = clean.substring(2).trim();
+    if (clean.startsWith('an ')) clean = clean.substring(3).trim();
+    if (clean.startsWith('the ')) clean = clean.substring(4).trim();
+    return clean;
   }
 }

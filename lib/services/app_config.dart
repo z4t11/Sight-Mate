@@ -9,6 +9,14 @@ class AppConfig {
   static String get geminiApiKey =>
       dotenv.env['GEMINI_API_KEY'] ?? '';
 
+  /// Google Maps Platform API Key (from Google Cloud Console, starts with 'AIza...').
+  static String get googleMapsApiKey =>
+      dotenv.env['GOOGLE_MAPS_API_KEY'] ?? '';
+
+  /// True if a dedicated Google Maps Platform key is configured.
+  static bool get hasGoogleMapsApiKey =>
+      googleMapsApiKey.trim().isNotEmpty && googleMapsApiKey.startsWith('AIza');
+
   /// Default to 'gemini-3.5-flash-lite' for ultra-fast multimodal response latency.
   static String get geminiModel =>
       dotenv.env['GEMINI_MODEL']?.isNotEmpty == true

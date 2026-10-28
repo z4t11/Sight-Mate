@@ -25,4 +25,13 @@ class MapNode {
         hazards: List<String>.from(j['hazards'] as List? ?? []),
         description: j['description'] as String? ?? '',
       );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'floor': floor,
+        'expected_signs': expectedSigns,
+        'hazards': hazards,
+        'description': description,
+      };
 }

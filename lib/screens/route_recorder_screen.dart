@@ -1,25 +1,28 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../models/map_node.dart';
-import '../models/map_edge.dart';
 import '../services/map_loader.dart';
 import '../services/positioning_service.dart';
 import '../services/tts_service.dart';
 import '../services/stt_service.dart';
 import '../services/haptic_service.dart';
 import '../services/hardware_button_service.dart';
-import '../services/route_recorder_service.dart';
+import '../services/camera_service.dart';
+import '../services/gemini_service.dart';
+import '../services/clew_route_recorder.dart';
 import '../utils/compass_helper.dart';
 
 enum _RecorderPhase { setStart, recordingWalk, setDestination, completed }
 
-/// Accessible screen allowing users, students, or coordinators to map and save
-/// any building route (e.g. Staff Room to Software Lab) by walking it.
+/// Clew-inspired Route Recorder Screen.
+/// Allows blind and low-vision users to record an indoor route completely hands-free.
+/// Tracks phone movement, auto-drops spatial crumbs, detects turns, and saves the route locally.
 class RouteRecorderScreen extends StatefulWidget {
   final MapLoader mapLoader;
   final PositioningService positioning;
   final TtsService tts;
   final SttService stt;
+  final CameraService? camera;
+  final GeminiService? gemini;
 
   const RouteRecorderScreen({
     super.key,
@@ -27,6 +30,8 @@ class RouteRecorderScreen extends StatefulWidget {
     required this.positioning,
     required this.tts,
     required this.stt,
+    this.camera,
+    this.gemini,
   });
 
   @override
@@ -34,7 +39,7 @@ class RouteRecorderScreen extends StatefulWidget {
 }
 
 class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
-  final _recorder = RouteRecorderService();
+  late final ClewRouteRecorder _recorder;
   final _hwButtons = HardwareButtonService();
   final _startController = TextEditingController(text: 'Staff Room');
   final _destController = TextEditingController(text: 'Software Lab');
@@ -42,36 +47,42 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
   _RecorderPhase _phase = _RecorderPhase.setStart;
   StreamSubscription<int>? _stepSub;
   Timer? _headingPollTimer;
-  String _statusMessage = 'Tap anywhere or speak to set starting room.';
+  String _statusMessage = 'Speak or confirm starting room name.';
 
   @override
   void initState() {
     super.initState();
+    _recorder = ClewRouteRecorder(
+      camera: widget.camera,
+      gemini: widget.gemini,
+    );
+    _recorder.addListener(_onRecorderUpdate);
     _hwButtons.addListener(_onHardwareButton);
 
-    // Listen to real-time pedometer steps
+    // Listen to real-time pedometer steps for hands-free dead reckoning
     _stepSub = widget.positioning.onStepStream.listen((delta) {
       if (_phase == _RecorderPhase.recordingWalk) {
-        setState(() {
-          _recorder.onStep(delta);
-        });
+        _recorder.onStep(delta);
       }
     });
 
     // Poll live compass heading
-    _headingPollTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
+    _headingPollTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (_phase == _RecorderPhase.recordingWalk) {
         _recorder.updateHeading(widget.positioning.currentHeading);
-        if (mounted) setState(() {});
       }
     });
 
     _announceStart();
   }
 
+  void _onRecorderUpdate() {
+    if (mounted) setState(() {});
+  }
+
   Future<void> _announceStart() async {
     await widget.tts.speak(
-      "Route Recorder active. Say or confirm your starting room name, like Staff Room.",
+      "Clew Route Recorder active. Say or confirm your starting point, like Staff Room.",
     );
   }
 
@@ -85,9 +96,9 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
       Navigator.of(context).pop();
       return true;
     } else if (button == HardwareButton.volumeUp) {
-      // Push-to-talk / Add waypoint
+      // Hands-free action trigger
       if (_phase == _RecorderPhase.recordingWalk) {
-        _addTurnWaypoint();
+        _finishWalkAndPromptDestination();
       } else {
         _listenForRoomName();
       }
@@ -120,38 +131,27 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
     _recorder.startRecording(startName);
     setState(() {
       _phase = _RecorderPhase.recordingWalk;
-      _statusMessage =
-          'Walk down the corridor towards the turn. Tap screen at each corner.';
+      _statusMessage = 'Recording walk from $startName. Walk freely without tapping.';
     });
 
     await HapticService.confirm();
     await widget.tts.speak(
-      "Starting at $startName. Walk forward along the corridor. "
-      "Tap the screen when you reach a corner, turn, or doorway.",
+      "Started recording at $startName. Walk normally to your destination. "
+      "Sight Mate will drop crumbs and detect turns automatically. "
+      "When you reach your destination, tap the screen or double-click Volume Up.",
     );
   }
 
-  void _addTurnWaypoint() async {
-    final summary = _recorder.addWaypoint();
-    await HapticService.confirm();
-    setState(() {
-      _statusMessage = '$summary Now continue towards the next turn or door.';
-    });
-    await widget.tts.speak(
-      "$summary Now turn into the hallway and keep walking. "
-      "Tap when you reach the next turn or destination door.",
-    );
-  }
-
-  void _promptDestination() async {
+  void _finishWalkAndPromptDestination() async {
     await HapticService.confirm();
     setState(() {
       _phase = _RecorderPhase.setDestination;
-      _statusMessage = 'At destination door. Confirm room name.';
+      _statusMessage = 'Walk finished (${_recorder.totalSteps} steps). Confirm destination name.';
     });
+
     await widget.tts.speak(
-      "You have reached the destination door. "
-      "What is the destination room name? For example, Software Lab.",
+      "Reached destination after ${_recorder.totalSteps} steps. "
+      "What is the destination name? For example, Software Lab.",
     );
   }
 
@@ -159,23 +159,18 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
     final destName = _destController.text.trim();
     if (destName.isEmpty) return;
 
-    final result = await _recorder.finishRecording(destName);
-    final newNodes = (result['nodes'] as List).cast<MapNode>();
-    final newEdges = (result['edges'] as List).cast<MapEdge>();
-
-    // Inject into active MapLoader in memory immediately
-    widget.mapLoader.addCustomGraph(newNodes, newEdges);
+    final route = await _recorder.finishAndSave(destName);
 
     setState(() {
       _phase = _RecorderPhase.completed;
       _statusMessage =
-          'Route saved successfully between ${_startController.text} and $destName!';
+          'Route saved: ${route.name} (${route.totalSteps} steps, ${route.keypoints.length} keypoints)!';
     });
 
     await HapticService.confirm();
     await widget.tts.speak(
-      "Route successfully saved between ${_startController.text} and $destName! "
-      "You can now ask to navigate between them anytime.",
+      "Route successfully saved between ${route.startName} and ${route.destinationName}! "
+      "Return route was also generated automatically. You can now retrace this path anytime.",
     );
 
     if (mounted) {
@@ -189,7 +184,8 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
     _stepSub?.cancel();
     _headingPollTimer?.cancel();
     _hwButtons.removeListener(_onHardwareButton);
-    _recorder.cancelRecording();
+    _recorder.removeListener(_onRecorderUpdate);
+    _recorder.dispose();
     _startController.dispose();
     _destController.dispose();
     super.dispose();
@@ -202,7 +198,7 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('Route Recorder (Scan & Save)'),
+        title: const Text('Clew Route Tracker (Indoor)'),
         backgroundColor: Colors.grey[900],
         leading: IconButton(
           icon: const Icon(Icons.close),
@@ -215,105 +211,86 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Status Header
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: Colors.amber[900]?.withValues(alpha: 0.3),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.amber, width: 2),
-                ),
-                child: Text(
-                  _statusMessage,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // Phase 1: Set Start Room
+              // ── Phase 1: Set Starting Location ──
               if (_phase == _RecorderPhase.setStart) ...[
                 const Text(
-                  'Starting Room / Class:',
-                  style: TextStyle(color: Colors.white70, fontSize: 16),
+                  '1. Starting Location',
+                  style: TextStyle(color: Colors.amber, fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
                 TextField(
                   controller: _startController,
                   style: const TextStyle(color: Colors.white, fontSize: 20),
                   decoration: InputDecoration(
+                    hintText: 'e.g. Staff Room',
+                    hintStyle: const TextStyle(color: Colors.grey),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.mic, color: Colors.amber),
+                      onPressed: _listenForRoomName,
+                    ),
                     filled: true,
-                    fillColor: Colors.grey[850],
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                    hintText: 'e.g. Staff Room, Class 1',
-                    hintStyle: const TextStyle(color: Colors.white38),
+                    fillColor: Colors.grey[900],
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
-                const SizedBox(height: 24),
+                const Spacer(),
                 ElevatedButton.icon(
-                  onPressed: _beginWalkRecording,
+                  icon: const Icon(Icons.directions_walk, size: 28),
+                  label: const Text('START WALKING RECORD', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green[700],
+                    foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 20),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
-                  icon: const Icon(Icons.play_arrow, size: 28, color: Colors.white),
-                  label: const Text(
-                    'START WALKING & RECORD',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
+                  onPressed: _beginWalkRecording,
                 ),
               ],
 
-              // Phase 2: Live Walk & Waypoint Capture
+              // ── Phase 2: Live Hands-free Walk Recording ──
               if (_phase == _RecorderPhase.recordingWalk) ...[
                 Expanded(
-                  child: InkWell(
-                    onTap: _addTurnWaypoint,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: _finishWalkAndPromptDestination,
                     child: Container(
+                      padding: const EdgeInsets.all(24),
                       decoration: BoxDecoration(
                         color: Colors.blueGrey[900],
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: Colors.cyanAccent, width: 3),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: Colors.cyan, width: 2),
                       ),
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          const Icon(Icons.turn_right, size: 64, color: Colors.cyanAccent),
-                          const SizedBox(height: 12),
+                          const Icon(Icons.track_changes, size: 64, color: Colors.cyanAccent),
+                          const SizedBox(height: 16),
                           Text(
-                            '${_recorder.currentLegSteps} STEPS',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 42,
-                              fontWeight: FontWeight.bold,
-                            ),
+                            '${_recorder.totalSteps} STEPS',
+                            style: const TextStyle(color: Colors.white, fontSize: 36, fontWeight: FontWeight.bold),
                           ),
-                          const SizedBox(height: 8),
                           Text(
-                            'Heading: ${dirWord.toUpperCase()} (${widget.positioning.currentHeading.toStringAsFixed(0)}°)',
-                            style: const TextStyle(color: Colors.amberAccent, fontSize: 20),
+                            '${_recorder.totalDistanceMeters.toStringAsFixed(1)} m · ${_recorder.crumbCount} crumbs · ${_recorder.keypointCount} keypoints',
+                            style: const TextStyle(color: Colors.cyanAccent, fontSize: 16),
                           ),
-                          const SizedBox(height: 12),
+                          const SizedBox(height: 24),
                           Text(
-                            'Waypoints Recorded: ${_recorder.waypointsCount}',
-                            style: const TextStyle(color: Colors.white70, fontSize: 16),
+                            'Facing: $dirWord (${widget.positioning.currentHeading.round()}°)',
+                            style: const TextStyle(color: Colors.amber, fontSize: 18),
                           ),
-                          const SizedBox(height: 20),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: Colors.cyan[800],
-                              borderRadius: BorderRadius.circular(20),
+                          if (_recorder.latestVisionLandmark != null) ...[
+                            const SizedBox(height: 12),
+                            Text(
+                              'Landmark: ${_recorder.latestVisionLandmark}',
+                              style: const TextStyle(color: Colors.greenAccent, fontSize: 15),
+                              textAlign: TextAlign.center,
                             ),
-                            child: const Text(
-                              'TAP ANYWHERE AT CORNER / TURN',
-                              style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                            ),
+                          ],
+                          const Spacer(),
+                          const Text(
+                            'Tap screen or double-click Vol Up\nwhen you reach destination door',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Colors.white70, fontSize: 15),
                           ),
                         ],
                       ),
@@ -322,51 +299,83 @@ class _RouteRecorderScreenState extends State<RouteRecorderScreen> {
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton.icon(
-                  onPressed: _promptDestination,
+                  icon: const Icon(Icons.flag, size: 28),
+                  label: const Text('ARRIVED AT DESTINATION', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.purple[700],
-                    padding: const EdgeInsets.symmetric(vertical: 18),
+                    backgroundColor: Colors.amber[800],
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
-                  icon: const Icon(Icons.flag, color: Colors.white),
-                  label: const Text(
-                    'ARRIVED AT DESTINATION DOOR',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                  ),
+                  onPressed: _finishWalkAndPromptDestination,
                 ),
               ],
 
-              // Phase 3: Set Destination Room Name
+              // ── Phase 3: Set Destination Name & Save ──
               if (_phase == _RecorderPhase.setDestination) ...[
                 const Text(
-                  'Destination Room / Lab Name:',
-                  style: TextStyle(color: Colors.white70, fontSize: 16),
+                  '2. Destination Name',
+                  style: TextStyle(color: Colors.amber, fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
                 TextField(
                   controller: _destController,
                   style: const TextStyle(color: Colors.white, fontSize: 20),
                   decoration: InputDecoration(
+                    hintText: 'e.g. Software Lab',
+                    hintStyle: const TextStyle(color: Colors.grey),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.mic, color: Colors.amber),
+                      onPressed: _listenForRoomName,
+                    ),
                     filled: true,
-                    fillColor: Colors.grey[850],
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-                    hintText: 'e.g. Software Lab, Class 2',
-                    hintStyle: const TextStyle(color: Colors.white38),
+                    fillColor: Colors.grey[900],
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 16),
+                Text(
+                  'Recorded ${_recorder.totalSteps} steps (${_recorder.totalDistanceMeters.toStringAsFixed(1)}m) across ${_recorder.keypointCount} keypoints.',
+                  style: const TextStyle(color: Colors.white70, fontSize: 15),
+                ),
+                const Spacer(),
                 ElevatedButton.icon(
-                  onPressed: _saveRoute,
+                  icon: const Icon(Icons.save, size: 28),
+                  label: const Text('SAVE ROUTE & RETURN PATH', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.green[700],
+                    foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 20),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                   ),
-                  icon: const Icon(Icons.check_circle, size: 28, color: Colors.white),
-                  label: const Text(
-                    'SAVE & ENABLE ROUTE',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                  onPressed: _saveRoute,
+                ),
+              ],
+
+              // ── Phase 4: Completed ──
+              if (_phase == _RecorderPhase.completed) ...[
+                const Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.check_circle, color: Colors.green, size: 80),
+                      SizedBox(height: 16),
+                      Text(
+                        'Route Successfully Saved!',
+                        style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold),
+                      ),
+                    ],
                   ),
                 ),
               ],
+
+              const SizedBox(height: 12),
+              // Status notice
+              Text(
+                _statusMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.grey, fontSize: 13),
+              ),
             ],
           ),
         ),

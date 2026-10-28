@@ -24,6 +24,18 @@ class MainActivity : FlutterActivity() {
     private var isAudioGating = false
     private var audioGateThread: Thread? = null
 
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            if (throwable is java.lang.RuntimeException && throwable.message?.contains("FlutterJNI is not attached to native") == true) {
+                android.util.Log.w("SightMate", "Suppressed harmless FlutterJNI detachment race condition during background/close: ${throwable.message}")
+            } else {
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        }
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         methodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL)

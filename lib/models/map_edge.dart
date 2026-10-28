@@ -18,4 +18,11 @@ class MapEdge {
         steps: j['steps'] as int,
         heading: (j['heading'] as num).toDouble(),
       );
+
+  Map<String, dynamic> toJson() => {
+        'from': from,
+        'to': to,
+        'steps': steps,
+        'heading': heading,
+      };
 }
